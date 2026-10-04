@@ -74,6 +74,18 @@ SEX_COST = 0.4  # fraction of its energy each parent pays; the child gets both p
 PICK_INIT = 1.5  # initial mate-choosiness = rand * this (colour distance, max ~1.2)
 PICK_MUT_STD = 0.02  # mate-choosiness mutation per birth
 
+# ---- body shape ----
+BODY = 1  # size, speed and sensing-range genes with energy costs (0 = off)
+BODY_MIN = 0.5  # each gene is a multiplier, clamped to [BODY_MIN, BODY_MAX]
+BODY_MAX = 2.0
+BODY_INIT = 0.3  # initial genes = 1 + (rand - 0.5) * this
+BODY_MUT_STD = 0.03  # mutation per birth
+SIZE_COST = 0.004  # energy per step per unit of size
+SPEED_COST = 0.002  # per unit of top-speed multiplier
+SENSE_COST = 0.002  # per unit of sensing-range multiplier
+BIG_SIZE = 1.3  # render only: bigger than this is drawn 2x2, bigger than BIG_SIZE2 3x3
+BIG_SIZE2 = 1.7
+
 # ---- brain ----
 N_HID = 16
 K_MAX = 8  # max loop count

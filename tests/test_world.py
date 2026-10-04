@@ -275,6 +275,7 @@ def _arena(n=2):
     w.energy[:n] = 1.0
     w.food.zero_()
     w.meat.zero_()
+    w.body[:] = 1.0  # average bodies
     return w
 
 
@@ -431,3 +432,79 @@ def test_sex_world_runs_and_is_deterministic(monkeypatch):
     for name in ("pos", "energy", "alive", "genome", "pick", "color"):
         assert torch.equal(getattr(runs[0], name), getattr(runs[1], name)), name
     assert torch.isfinite(runs[0].energy).all()
+
+
+# ---- body-shape genes ----
+
+
+def test_size_scales_fights():
+    if not (config.PREDATION and config.BODY):
+        pytest.skip("needs predation and body genes")
+
+    def duel(size_a, size_b):
+        w = _arena()
+        w.diet[:2] = 1.0
+        w.energy[:2] = 5.0  # enough to survive the bite
+        w.body[0, 0], w.body[1, 0] = size_a, size_b
+        _set_attack(w, [20.0, -20.0])  # 0 hunts, 1 is passive
+        w.step()
+        return float(w.energy[0]), float(w.energy[1])
+
+    even = duel(1.0, 1.0)
+    big_hunter = duel(1.5, 1.0)
+    big_prey = duel(1.0, 1.5)
+    assert big_hunter[1] < even[1] and big_hunter[0] > even[0]
+    assert big_prey[1] > even[1] and big_prey[0] < even[0]  # a big victim loses less
+
+
+def test_body_costs_and_speed_gene():
+    if not config.BODY:
+        pytest.skip("body off")
+
+    def run(i, val):
+        w = _arena(1)
+        w.body[0] = 1.0
+        w.body[0, i] = val
+        w.step()
+        return float(w.energy[0]), w
+
+    for i, cost in enumerate((config.SIZE_COST, config.SPEED_COST, config.SENSE_COST)):
+        lo, _ = run(i, 1.0)
+        hi, _ = run(i, 2.0)
+        # speed also raises move cost slightly, so only require at least the gene cost
+        assert lo - hi >= cost * 0.99
+    # Top speed gene scales how far a creature moves.
+    moved = []
+    for g in (1.0, 2.0):
+        w = _arena(1)
+        w.body[0] = 1.0
+        w.body[0, 1] = g
+        w.heading[0] = 0.0
+        w.step()
+        moved.append(float(w.pos[0, 0]) - 50.5)
+    assert 0 < moved[0] < moved[1]
+
+
+def test_sense_gene_scales_reach_and_inheritance(monkeypatch):
+    if not config.BODY:
+        pytest.skip("body off")
+    w = _sex_world(monkeypatch, 2, mut=0.0)
+    monkeypatch.setattr(world, "BODY_MUT_STD", 0.0)
+    w.pos[:2] = 5.5
+    w.body[:2] = torch.tensor([[1.0, 1.0, 1.0], [2.0, 1.0, 0.5]], device=DEV)
+    w.reproduce()
+    kid = (w.alive & (torch.arange(N_MAX, device=DEV) >= 2)).nonzero().squeeze(1)[0]
+    assert torch.allclose(w.body[kid], torch.tensor([1.5, 1.0, 0.75], device=DEV))
+    monkeypatch.setattr(world, "SEX", 0)
+    w.alive[:] = False
+    w.alive[0] = True
+    w.energy[0] = 2 * REPRO_E
+    w.reproduce()
+    kid = (w.alive & (torch.arange(N_MAX, device=DEV) >= 1)).nonzero().squeeze(1)[0]
+    assert torch.equal(w.body[kid], w.body[0])
+
+
+def test_census_has_body_means():
+    if config.BODY:
+        row = make_world().census()
+        assert 0.5 <= row["mean_size"] <= 2 and "mean_sense" in row

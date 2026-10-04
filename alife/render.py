@@ -2,7 +2,18 @@
 
 import torch
 
-from .config import DEV, PHERO_CH, PHERO_GLOW, PREDATION, TRAIL_DECAY, H, W
+from .config import (
+    BIG_SIZE,
+    BIG_SIZE2,
+    BODY,
+    DEV,
+    PHERO_CH,
+    PHERO_GLOW,
+    PREDATION,
+    TRAIL_DECAY,
+    H,
+    W,
+)
 
 # Glow colour per pheromone channel (cycled if there are more channels).
 PHERO_COLORS = torch.tensor(
@@ -35,5 +46,12 @@ def render(world, mode):
         d = world.diet[idx]
         col = torch.stack([d, torch.full_like(d, 0.25), 1 - d], 1)
     trail[cy, cx] = col
+    if BODY:  # big bodies cover more pixels: 2x2 above BIG_SIZE, 3x3 above BIG_SIZE2
+        size = world.body[idx, 0]
+        for lo, hi, thr in ((0, 2, BIG_SIZE), (-1, 2, BIG_SIZE2)):
+            big = size > thr
+            for dy in range(lo, hi):
+                for dx in range(lo, hi):
+                    trail[(cy[big] + dy) % H, (cx[big] + dx) % W] = col[big]
     img = (img + trail).clamp(max=1)
     return (img * 255).byte().permute(1, 0, 2).contiguous().cpu().numpy()

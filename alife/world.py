@@ -11,6 +11,11 @@ from .config import (
     ATTACK_COST,
     ATTACK_RATE,
     BASE_COST,
+    BODY,
+    BODY_INIT,
+    BODY_MAX,
+    BODY_MIN,
+    BODY_MUT_STD,
     DEV,
     DIET_INIT,
     DIET_MUT_STD,
@@ -50,9 +55,12 @@ from .config import (
     SEASON_AMP,
     SEASON_PERIOD,
     SENSE_ANGLES,
+    SENSE_COST,
     SENSE_DIST,
     SEX,
     SEX_COST,
+    SIZE_COST,
+    SPEED_COST,
     TAU,
     THINK_COST,
     G,
@@ -121,6 +129,13 @@ class World:
             if PREDATION
             else torch.zeros(N_MAX, device=DEV)
         )
+        # Body genes (size, top speed, sensing range) as multipliers; all 1 and no
+        # RNG drawn when BODY is off.
+        s.body = (
+            1 + (torch.rand(N_MAX, 3, device=DEV) - 0.5) * BODY_INIT
+            if BODY
+            else torch.ones(N_MAX, 3, device=DEV)
+        )
         # Mate preference gene: partners must be closer in colour than both picks.
         # No RNG is drawn when sex is off.
         s.pick = (
@@ -176,8 +191,9 @@ class World:
         food_s = blur(s.food)
         dens_s = blur(count.view(H, W))
         ang = s.heading[:, None] + s.sense_a[None]
-        sx = (s.pos[:, 0:1] + SENSE_DIST * ang.cos()).floor().long() % W
-        sy = (s.pos[:, 1:2] + SENSE_DIST * ang.sin()).floor().long() % H
+        reach = SENSE_DIST * s.body[:, 2:3]  # sensing range gene
+        sx = (s.pos[:, 0:1] + reach * ang.cos()).floor().long() % W
+        sy = (s.pos[:, 1:2] + reach * ang.sin()).floor().long() % H
         # To add a sensor group: append [N, k] here and bump N_IN in config.
         sensors = [food_s[sy, sx], dens_s[sy, sx], (s.energy / REPRO_E)[:, None]]
         if PHERO_CH:  # scent per channel at each sense point -> [N, 3 * PHERO_CH]
@@ -195,7 +211,7 @@ class World:
         out = torch.zeros(N_MAX, N_OUT, device=DEV)
         out[idx], s.h[idx] = brain.think(s.genome[idx], s.loops[idx], x[idx], s.h[idx])
         turn = out[:, 0].tanh() * MAX_TURN
-        speed = out[:, 1].sigmoid() * MAX_SPEED
+        speed = out[:, 1].sigmoid() * MAX_SPEED * s.body[:, 1]
         # To add an output: it is column 2 + PHERO_CH + ...; bump N_OUT in config.
         s.heading = (s.heading + turn) % TAU
         s.pos[:, 0] = (s.pos[:, 0] + speed * s.heading.cos()) % W
@@ -207,9 +223,11 @@ class World:
         atk = None
         if PREDATION:
             atk = (out[:, -1] - ATTACK_BIAS).sigmoid() * alive_f
-            atk = (atk * 1024).round() / 1024
+            # Size is muscle: attack power is strength x size, and a big victim takes
+            # proportionally less of it (sizes are all 1 when BODY is off).
+            atk = (atk * s.body[:, 0] * 1024).round() / 1024
             a_cell = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, atk)
-            loss = ATTACK_RATE * (a_cell[cell] - atk) * alive_f  # others' attacks
+            loss = ATTACK_RATE * (a_cell[cell] - atk) / s.body[:, 0] * alive_f
             loss = (loss.minimum(s.energy.clamp(min=0)) * 1024).floor() / 1024
             stolen = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, loss)
             share = atk / a_cell[cell].clamp(min=1e-6)
@@ -236,6 +254,11 @@ class World:
         if atk is not None:
             s.energy -= ATTACK_COST * atk
         s.energy -= PLAGUE_DRAIN * s.sick
+        if BODY:  # bigger, faster, sharper-eyed bodies cost more to run
+            b = s.body
+            s.energy -= (
+                SIZE_COST * b[:, 0] + SPEED_COST * b[:, 1] + SENSE_COST * b[:, 2]
+            )
         s.age += 1
         was = s.alive
         s.alive = was & (s.energy > 0) & (s.age < MAX_AGE)
@@ -308,6 +331,11 @@ class World:
         if PREDATION:
             mix = (s.diet[a] + s.diet[b]) / 2
             s.diet[kids] = (mix + torch.randn(n, device=DEV) * DIET_MUT_STD).clamp(0, 1)
+        if BODY:
+            mix = (s.body[a] + s.body[b]) / 2
+            s.body[kids] = (mix + torch.randn(n, 3, device=DEV) * BODY_MUT_STD).clamp(
+                BODY_MIN, BODY_MAX
+            )
         mix = (s.pick[a] + s.pick[b]) / 2
         s.pick[kids] = (mix + torch.randn(n, device=DEV) * PICK_MUT_STD).clamp(min=0)
         flip = (torch.rand(n, device=DEV) < LOOP_MUT_P).long()
@@ -342,6 +370,10 @@ class World:
             ).clamp(0, 1)
 
         s.genome[kids] = s.genome[parents] + torch.randn(n, G, device=DEV) * MUT_STD
+        if BODY:
+            s.body[kids] = (
+                s.body[parents] + torch.randn(n, 3, device=DEV) * BODY_MUT_STD
+            ).clamp(BODY_MIN, BODY_MAX)
         flip = (torch.rand(n, device=DEV) < LOOP_MUT_P).long()
         sign = torch.randint(0, 2, (n,), device=DEV) * 2 - 1
         s.loops[kids] = (s.loops[parents] + flip * sign).clamp(1, K_MAX)
@@ -402,5 +434,8 @@ class World:
             row["meat"] = float(s.meat.sum())
         if SEX:
             row["mean_pick"] = float(s.pick[a].mean().nan_to_num())
+        if BODY:
+            for i, name in enumerate(("size", "speed", "sense")):
+                row[f"mean_{name}"] = float(s.body[a, i].mean().nan_to_num())
         row.update({f"loops_{k}": n for k, n in enumerate(hist.tolist(), 1)})
         return row
