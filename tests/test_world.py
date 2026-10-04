@@ -195,3 +195,58 @@ def test_trails_fade_and_can_be_off():
     w.alive[:] = False
     render(w, 0)
     assert w.trail.max() <= first.max() * config.TRAIL_DECAY + 1e-6
+
+
+def test_blur_handles_channel_stacks():
+    g = torch.rand(2, H, W, device=DEV)
+    torch.testing.assert_close(blur(g, 1)[1], blur(g[1], 1))
+
+
+def test_pheromone_deposit_diffuse_decay():
+    w = make_world()
+    w.alive[:] = False
+    w.phero[:] = 0
+    w.phero[0, 100, 100] = 1.0
+    total = float(w.phero.sum())
+    w.step()  # nobody alive: scent only spreads and fades
+    assert float(w.phero.sum()) == pytest.approx(total * config.PHERO_DECAY, rel=1e-4)
+    assert w.phero[0, 100, 100] < 1.0 and w.phero[0, 100, 101] > 0
+    assert (w.phero[1] == 0).all()  # channels do not mix
+
+
+def test_pheromone_creature_deposits_and_smells():
+    w = make_world()
+    w.alive[:] = False
+    w.alive[0] = True
+    w.pos[0] = torch.tensor([200.5, 300.5], device=DEV)
+    w.genome[0] = 0
+    w.genome[0, -config.N_HID * config.N_OUT :] = 0  # w_out zero: sigmoid(0)=0.5
+    w.h[0] = 0
+    w.phero[:] = 0
+    w.step()
+    # Output 0 everywhere -> drops PHERO_DEPOSIT/2 per channel, then spreads.
+    expect = config.PHERO_DEPOSIT / 2 * config.PHERO_DECAY
+    assert float(w.phero.sum(dim=(1, 2))[0]) == pytest.approx(expect, rel=1e-3)
+    assert float(w.phero[:, 300, 200].min()) > 0  # near the drop site
+
+
+def test_pheromone_sensing_changes_creature_input():
+    # A creature facing a scent source gets a different brain input than one in a
+    # clean world; check through the hidden state after one step.
+    def run(scent):
+        w = make_world()
+        w.alive[:] = False
+        w.alive[0] = True
+        w.pos[0] = torch.tensor([200.5, 300.5], device=DEV)
+        w.heading[0] = 0.0
+        w.phero[:] = 0
+        if scent:
+            w.phero[:, 300, 206] = 5.0
+        torch.manual_seed(1)
+        w.genome[0] = torch.randn(config.G, device=DEV)
+        w.h[0] = 0
+        w.step()
+        return w.h[0].clone()
+
+    if config.PHERO_CH:
+        assert not torch.allclose(run(True), run(False))

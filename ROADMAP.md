@@ -21,7 +21,7 @@ A god game: M drops a meteor (wipes a disc of creatures and food), F floods the 
 
 ## Phase 2: Creatures that affect each other
 
-### Pheromones (M)
+### Pheromones (M) ✅
 Add 1–3 outputs that drop scent onto a grid that spreads (the existing `blur`) and fades each step. Sensors read it at `SENSE_ANGLES`. It's all grid ops, so it adds no extra GPU syncs. Expect trails, swarms, and maybe a "danger" signal once predators exist.
 - Touches: `N_OUT` += channels, `N_IN` += 3 × channels, `World.step()` sense and act, `render.py` overlay showing each channel as a coloured glow.
 

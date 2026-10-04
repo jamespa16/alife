@@ -48,26 +48,37 @@ THINK_COST = 0.002  # per brain loop
 REPRO_E = 2.0  # energy needed to split
 MAX_AGE = 3000
 
+# ---- pheromones ----
+PHERO_CH = 2  # scent channels creatures can drop and smell (0 = no pheromones)
+PHERO_DEPOSIT = 0.5  # max scent a creature drops per channel per step
+PHERO_DECAY = 0.95  # per step, fraction of scent kept
+PHERO_DIFFUSE = 0.5  # per step, how far scent is mixed toward its blurred self
+PHERO_RADIUS = 1  # blur radius used for diffusion
+PHERO_COST = 0.002  # energy per unit of scent dropped
+PHERO_GLOW = 1.0  # display brightness of each channel (render only)
+
 # ---- brain ----
 N_HID = 16
-N_OUT = 2  # turn, speed
 K_MAX = 8  # max loop count
 MUT_STD = 0.03
 LOOP_MUT_P = 0.05
 
 
 N_IN: int
+N_OUT: int
 G: int
 
 
 def _derive():
-    global N_IN, G
-    N_IN = 2 * len(SENSE_ANGLES) + 1  # food x3, density x3, own energy
+    global N_IN, N_OUT, G
+    # food x3, density x3, own energy, then each pheromone channel x3
+    N_IN = 2 * len(SENSE_ANGLES) + 1 + len(SENSE_ANGLES) * PHERO_CH
+    N_OUT = 2 + PHERO_CH  # turn, speed, then one deposit per pheromone channel
     G = N_HID * N_IN + N_HID * N_HID + N_HID + N_OUT * N_HID  # genome length
 
 
 _derive()
-_DERIVED = {"N_IN", "G", "TAU"}
+_DERIVED = {"N_IN", "N_OUT", "G", "TAU"}
 
 
 def override(settings):

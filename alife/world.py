@@ -24,6 +24,12 @@ from .config import (
     N_INIT,
     N_MAX,
     N_OUT,
+    PHERO_CH,
+    PHERO_COST,
+    PHERO_DECAY,
+    PHERO_DEPOSIT,
+    PHERO_DIFFUSE,
+    PHERO_RADIUS,
     PLAGUE_DRAIN,
     PLAGUE_RECOVER,
     PLAGUE_SPREAD,
@@ -43,10 +49,12 @@ from .config import (
 
 
 def blur(g, r=4):
-    """Box blur with wrap-around, so sensors see a neighbourhood, not one cell."""
-    return F.avg_pool2d(F.pad(g[None, None], (r,) * 4, mode="circular"), 2 * r + 1, 1)[
-        0, 0
-    ]
+    """Box blur with wrap-around, so sensors see a neighbourhood, not one cell.
+
+    Works on [H, W] or on a stack [C, H, W] (each channel blurred separately)."""
+    flat = g.reshape(-1, 1, *g.shape[-2:])
+    out = F.avg_pool2d(F.pad(flat, (r,) * 4, mode="circular"), 2 * r + 1, 1)
+    return out.reshape(g.shape)
 
 
 class World:
@@ -77,6 +85,7 @@ class World:
         s.t = 0
         s.update_fert()
         s.food = s.fert.clone()
+        s.phero = torch.zeros(PHERO_CH, H, W, device=DEV)  # scent, [channel, y, x]
         s.sick = torch.zeros(N_MAX, dtype=torch.bool, device=DEV)
         s.plague_left = 0  # steps of outbreak remaining
         s.trail = None  # render's fading creature layer, allocated on first frame
@@ -125,9 +134,12 @@ class World:
         ang = s.heading[:, None] + s.sense_a[None]
         sx = (s.pos[:, 0:1] + SENSE_DIST * ang.cos()).floor().long() % W
         sy = (s.pos[:, 1:2] + SENSE_DIST * ang.sin()).floor().long() % H
-        x = torch.cat(
-            [food_s[sy, sx], dens_s[sy, sx], (s.energy / REPRO_E)[:, None]], 1
-        )
+        # To add a sensor group: append [N, k] here and bump N_IN in config.
+        sensors = [food_s[sy, sx], dens_s[sy, sx], (s.energy / REPRO_E)[:, None]]
+        if PHERO_CH:  # scent per channel at each sense point -> [N, 3 * PHERO_CH]
+            smell = s.phero[:, sy, sx].tanh()  # [C, N, 3]
+            sensors.append(smell.permute(1, 0, 2).reshape(N_MAX, -1))
+        x = torch.cat(sensors, 1)
 
         # Act.
         # Only living creatures think: the brain dominates step time, and most
@@ -137,12 +149,28 @@ class World:
         out[idx], s.h[idx] = brain.think(s.genome[idx], s.loops[idx], x[idx], s.h[idx])
         turn = out[:, 0].tanh() * MAX_TURN
         speed = out[:, 1].sigmoid() * MAX_SPEED
+        # To add an output: it is column 2 + PHERO_CH + ...; bump N_OUT in config.
         s.heading = (s.heading + turn) % TAU
         s.pos[:, 0] = (s.pos[:, 0] + speed * s.heading.cos()) % W
         s.pos[:, 1] = (s.pos[:, 1] + speed * s.heading.sin()) % H
 
+        # Pheromones: drop scent where the creature stood when it sensed.
+        drop = None
+        if PHERO_CH:
+            drop = out[:, 2 : 2 + PHERO_CH].sigmoid().T * (PHERO_DEPOSIT * alive_f)
+            # Fixed-point amounts add exactly in any order, so the GPU's
+            # unordered scatter_add_ stays reproducible for a given seed.
+            drop = (drop * 1024).round() / 1024
+            # Sum into an empty grid first: adding to the decayed scent directly
+            # would round differently depending on the order.
+            new = torch.zeros(PHERO_CH, H * W, device=DEV)
+            new.scatter_add_(1, cell.expand(PHERO_CH, -1), drop)
+            s.phero += new.view(PHERO_CH, H, W)
+
         # Metabolism and death.
         s.energy += bite - (BASE_COST + MOVE_COST * speed + THINK_COST * s.loops)
+        if drop is not None:
+            s.energy -= PHERO_COST * drop.sum(0)
         s.energy -= PLAGUE_DRAIN * s.sick
         s.age += 1
         s.alive &= (s.energy > 0) & (s.age < MAX_AGE)
@@ -151,6 +179,9 @@ class World:
         s.t += 1
         s.update_fert()
         s.food = torch.minimum(s.food + FOOD_GROWTH * s.fert, s.fert)
+        if PHERO_CH:  # scent spreads, then fades
+            mixed = s.phero + PHERO_DIFFUSE * (blur(s.phero, PHERO_RADIUS) - s.phero)
+            s.phero = mixed * PHERO_DECAY
 
     def reproduce(s):
         parents = (s.alive & (s.energy > REPRO_E)).nonzero().squeeze(1)

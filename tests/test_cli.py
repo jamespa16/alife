@@ -56,3 +56,13 @@ def test_bad_arguments(args, message):
     r = alife(*args)
     assert r.returncode == 2
     assert message in r.stderr
+
+
+@pytest.mark.parametrize("ch", [0, 1, 3])
+def test_pheromone_channels_set_derived_sizes(tmp_path, ch):
+    # N_IN / N_OUT / G are derived from PHERO_CH after --set; the brain must follow.
+    log = tmp_path / "run.csv"
+    r = alife("--headless", "--steps", "10", "--seed", "1", "--log", str(log),
+              "--log-every", "10", "--set", f"PHERO_CH={ch}", *SMALL)  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    assert int(list(csv.DictReader(log.open()))[-1]["t"]) == 10
