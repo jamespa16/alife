@@ -135,3 +135,22 @@ class World:
         pop = int(s.alive.sum())
         loops = float(s.loops[s.alive].float().mean()) if pop else 0.0
         return pop, loops
+
+    def census(s):
+        """Population summary for logging: means plus a loop-count histogram."""
+        a = s.alive
+        hist = torch.bincount(s.loops[a], minlength=K_MAX + 1)[1:]
+        means = torch.stack(
+            [
+                s.loops[a].float().mean(),
+                s.energy[a].mean(),
+                s.age[a].float().mean(),
+                s.food.mean(),
+            ]
+        ).nan_to_num()  # empty population -> 0
+        row = {"t": s.t, "pop": int(hist.sum())}
+        row.update(
+            zip(("mean_loops", "mean_energy", "mean_age", "food"), means.tolist())
+        )
+        row.update({f"loops_{k}": n for k, n in enumerate(hist.tolist(), 1)})
+        return row

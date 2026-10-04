@@ -12,6 +12,8 @@ An artificial-life sandbox: creatures with evolving recurrent neural-net brains 
 uv sync                # install deps, incl. dev group (ruff, ty)
 uv run alife           # run the sim (entry point: alife.app:main)
 python -m alife        # same thing, without uv
+uv run alife --headless --steps 20000 --seed 1 --log run.csv --set THINK_COST=0
+                       # experiment run: no window, seeded, CSV every --log-every (100) steps
 uv run ruff check      # lint (--fix to autofix)
 uv run ruff format     # format
 uv run ty check        # type-check
@@ -21,9 +23,13 @@ There's no test suite or CI.
 
 Runtime keys: SPACE pauses, C switches the colour mode (lineage / loop count), and UP/DOWN doubles or halves the sim steps per frame (1–64). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
 
+Each CSV row comes from `World.census()`: `t`, `pop`, means of loops/energy/age/food, and `loops_1..loops_K_MAX` histogram counts. The same seed gives an identical CSV on the same device. `--set NAME=VALUE` overrides any int/float constant in `config.py`, except the derived ones (`N_IN`, `G`, `TAU`). In windowed mode, extinction resets the world, so `t` restarts in the log.
+
 ## Architecture
 
-Module flow: `app` (pygame loop) → `world.World.step()` → `brain.think()`, with `render` turning a `World` into a frame. All tunable constants live in `config.py`.
+**Constants are copied at import.** `world`, `brain` and `render` use `from .config import X`, so `config.override()` must run before they're imported. It raises if they already have been. That's why `app.main()` imports `World`, `render` and pygame inside the function. Keep `app.py` and `__init__.py` free of top-level imports of the sim modules.
+
+Module flow: `app` (CLI, logging, headless and pygame loops) → `world.World.step()` → `brain.think()`, with `render` turning a `World` into a frame. All tunable constants live in `config.py`.
 
 **Fixed-size structure-of-arrays state.** Each per-creature attribute (`pos`, `heading`, `energy`, `age`, `genome`, `loops`, `h`, `color`) is a tensor of length `N_MAX`, and the `alive` bool mask marks which slots are in use. Dead slots still go through every computation; their effects are masked out with `alive_f`. Birth means writing into free (`~alive`) slots, and death just clears `alive`. To add a new per-creature attribute, you must:
 1. allocate it in `World.reset()`
