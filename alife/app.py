@@ -142,7 +142,7 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
 
     slog = slog or SpeciesLog()
     pygame.init()
-    screen = pygame.display.set_mode((W, H))
+    screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
     frame = pygame.Surface((W, H))  # the full-world picture; the view crops it
     modes = ("lineage", "loops", "diet") + (("species",) if SPECIES else ())
     mode, spf, paused = 0, 1, False
@@ -159,9 +159,12 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False
+            elif e.type == pygame.VIDEORESIZE:
+                screen = pygame.display.get_surface()
+                view.resize(*screen.get_size())
             elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 if not (
-                    insp.data is not None and e.pos[0] >= W - INSPECT_W
+                    insp.data is not None and e.pos[0] >= screen.get_width() - INSPECT_W
                 ):  # not on the panel
                     wx, wy = view.to_world(*e.pos)
                     insp.select(world, wx, wy, PICK_RADIUS / view.zoom)
@@ -225,10 +228,14 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
             view.center_on(*insp.data["pos"])
 
         pygame.surfarray.blit_array(frame, render(world, mode))
-        if view.zoom == 1:
-            screen.blit(frame, (0, 0))
+        ox, oy, dw, dh = view.dest()
+        if (dw, dh) != screen.get_size():
+            screen.fill((0, 0, 0))  # letterbox bars
+        if view.zoom == 1 and (dw, dh) == (W, H):
+            screen.blit(frame, (ox, oy))
         else:
-            pygame.transform.scale(frame.subsurface(view.rect()), (W, H), screen)
+            sub = frame.subsurface(view.rect())
+            screen.blit(pygame.transform.scale(sub, (dw, dh)), (ox, oy))
         if show_hud:
             screen.blit(hud, (0, 0))
         if insp.data is not None:
@@ -236,7 +243,7 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
             color = (255, 90, 90) if insp.dead else (255, 255, 255)
             pygame.draw.circle(screen, color, (round(sx), round(sy)), 10, 1)
             draw_panel(panel, insp.data, insp.dead, pfont)
-            screen.blit(panel, (W - INSPECT_W, 0))
+            screen.blit(panel, (screen.get_width() - INSPECT_W, 0))
         pygame.display.flip()
 
         now = time.time()

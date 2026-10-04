@@ -34,10 +34,29 @@ SIZE = torch.tensor([W, H], device=DEV)
 
 
 class View:
-    """Which part of the full frame fills the window: zoom factor and centre."""
+    """Which part of the full frame fills the window: zoom factor and centre.
 
-    def __init__(s):
+    The window can be any size: the view is scaled to fit it, keeping the world's
+    aspect ratio, and centred with black bars (`dest`)."""
+
+    def __init__(s, sw=W, sh=H):
         s.zoom, s.cx, s.cy = 1.0, W / 2, H / 2
+        s.resize(sw, sh)
+
+    def resize(s, sw, sh):
+        """Fit the view to a window of sw x sh pixels."""
+        s.sw, s.sh = max(sw, 1), max(sh, 1)
+        s.scale = min(s.sw / W, s.sh / H)  # window pixels per frame pixel at zoom 1
+
+    def dest(s):
+        """(x, y, w, h) in window pixels where the view is drawn."""
+        w, h = round(W * s.scale), round(H * s.scale)
+        return (s.sw - w) // 2, (s.sh - h) // 2, w, h
+
+    def _virt(s, sx, sy):
+        """Window pixels to unscaled W x H view pixels."""
+        ox, oy, _, _ = s.dest()
+        return (sx - ox) / s.scale, (sy - oy) / s.scale
 
     def _clamp(s):
         s.zoom = min(max(s.zoom, 1.0), float(ZOOM_MAX))
@@ -52,26 +71,29 @@ class View:
         return round(s.cx - w / 2), round(s.cy - h / 2), round(w), round(h)
 
     def to_world(s, sx, sy):
+        vx, vy = s._virt(sx, sy)
         x, y, w, h = s.rect()
-        return x + sx * w / W, y + sy * h / H
+        return x + vx * w / W, y + vy * h / H
 
     def to_screen(s, wx, wy):
         x, y, w, h = s.rect()
-        return (wx - x) * W / w, (wy - y) * H / h
+        ox, oy, _, _ = s.dest()
+        return ox + (wx - x) * W / w * s.scale, oy + (wy - y) * H / h * s.scale
 
     def zoom_at(s, sx, sy, factor):
         """Zoom by `factor`, keeping the world point under screen (sx, sy) fixed."""
         wx, wy = s.to_world(sx, sy)
+        vx, vy = s._virt(sx, sy)
         s.zoom *= factor
         s._clamp()
-        s.cx = wx - sx / s.zoom + W / s.zoom / 2
-        s.cy = wy - sy / s.zoom + H / s.zoom / 2
+        s.cx = wx - vx / s.zoom + W / s.zoom / 2
+        s.cy = wy - vy / s.zoom + H / s.zoom / 2
         s._clamp()
 
     def pan(s, dx, dy):
         """Drag the picture by (dx, dy) screen pixels."""
-        s.cx -= dx / s.zoom
-        s.cy -= dy / s.zoom
+        s.cx -= dx / s.zoom / s.scale
+        s.cy -= dy / s.zoom / s.scale
         s._clamp()
 
     def center_on(s, wx, wy):

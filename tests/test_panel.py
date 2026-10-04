@@ -95,3 +95,17 @@ def test_draw_panel_paints_and_handles_missing_font(dead, with_font):
     }
     assert len(colours) > 10  # heatmaps and bars, not a flat fill
     pygame.quit()
+
+
+def test_view_resized_window_letterboxes_and_maps_back():
+    v = View(W * 2, H * 3)  # taller than the world's aspect: bars top and bottom
+    ox, oy, dw, dh = v.dest()
+    assert (ox, dw) == (0, W * 2) and dh == H * 2 and oy == H // 2
+    assert v.to_world(ox, oy) == pytest.approx((0, 0))
+    assert v.to_screen(W / 2, H / 2) == pytest.approx((W, H * 1.5))
+    sx, sy = W / 2, H
+    wx, wy = v.to_world(sx, sy)
+    v.zoom_at(sx, sy, 3)
+    assert v.to_world(sx, sy) == pytest.approx((wx, wy), abs=2)
+    v.resize(W, H)
+    assert v.dest() == (0, 0, W, H)
