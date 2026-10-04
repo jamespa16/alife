@@ -128,3 +128,70 @@ def test_override_refuses_after_sim_import():
     with pytest.raises(RuntimeError):
         config.override({"N_HID": "8"})
     assert config.N_HID == N_HID
+
+
+def test_seasons_swing_fertility_and_drift_is_deterministic():
+    w = make_world()
+    base = w.fert0
+    w.t = config.SEASON_PERIOD // 4  # sine peak
+    w.update_fert()
+    peak = w.fert.clone()
+    w.t = 3 * config.SEASON_PERIOD // 4  # trough
+    w.update_fert()
+    assert peak.mean() > w.fert.mean()
+    again = w.fert.clone()
+    w.update_fert()
+    assert torch.equal(again, w.fert)
+    assert torch.equal(base, w.fert0)  # base map untouched
+    w.t = 0
+    w.update_fert()
+    assert torch.allclose(
+        w.fert, base, atol=1e-6
+    )  # start of cycle: no scaling, no drift
+
+
+def test_meteor_kills_disc_and_clears_food():
+    w = make_world()
+    w.pos[0] = torch.tensor([2.0, 2.0], device=DEV)
+    w.pos[1] = torch.tensor([W / 2, H / 2], device=DEV)
+    w.alive[:2] = True
+    w.food.fill_(1.0)
+    w.meteor(0, 0, r=10)  # disc wraps around the corner
+    assert not w.alive[0] and w.alive[1]
+    assert w.food[0, 0] == 0 and w.food[-1, -1] == 0 and w.food[H // 2, W // 2] == 1
+
+
+def test_flood_refills_food():
+    w = make_world()
+    w.food.zero_()
+    w.flood()
+    assert torch.equal(w.food, w.fert)
+
+
+def test_plague_drains_and_spreads_then_ends():
+    w = make_world()
+    w.alive[:] = False
+    w.alive[:3] = True
+    w.pos[:3] = 5.5  # same cell
+    w.energy[:3] = 1.0
+    w.sick[:] = False
+    w.sick[0] = True
+    w.plague_left = 2
+    w.step()
+    assert w.plague_left == 1
+    assert w.energy[0] < w.energy[2] + 1  # sick one paid the drain
+    w.step()
+    assert w.plague_left == 0 and not w.sick.any()  # outbreak over: cleared
+    w.plague()
+    assert w.plague_left == config.PLAGUE_STEPS
+
+
+def test_trails_fade_and_can_be_off():
+    from alife.render import render
+
+    w = make_world()
+    render(w, 0)
+    first = w.trail.clone()
+    w.alive[:] = False
+    render(w, 0)
+    assert w.trail.max() <= first.max() * config.TRAIL_DECAY + 1e-6

@@ -1,5 +1,7 @@
 """Simulation state and the eat / sense / act / reproduce step."""
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -8,19 +10,28 @@ from .config import (
     BASE_COST,
     DEV,
     EAT_RATE,
+    FERT_DRIFT,
     FOOD_GROWTH,
     K_MAX,
     LOOP_MUT_P,
     MAX_AGE,
     MAX_SPEED,
     MAX_TURN,
+    METEOR_R,
     MOVE_COST,
     MUT_STD,
     N_HID,
     N_INIT,
     N_MAX,
     N_OUT,
+    PLAGUE_DRAIN,
+    PLAGUE_RECOVER,
+    PLAGUE_SPREAD,
+    PLAGUE_START,
+    PLAGUE_STEPS,
     REPRO_E,
+    SEASON_AMP,
+    SEASON_PERIOD,
     SENSE_ANGLES,
     SENSE_DIST,
     TAU,
@@ -42,7 +53,7 @@ class World:
     def __init__(s):
         # Smooth fertility map: rich and poor regions.
         noise = torch.rand(1, 1, 8, 8, device=DEV)
-        s.fert = F.interpolate(noise, size=(H, W), mode="bicubic")[0, 0].clamp(0.05, 1)
+        s.fert0 = F.interpolate(noise, size=(H, W), mode="bicubic")[0, 0].clamp(0.05, 1)
         s.sense_a = torch.tensor(SENSE_ANGLES, device=DEV)
         s.size = torch.tensor([W, H], device=DEV)
         t = torch.linspace(0, 1, K_MAX + 1, device=DEV)
@@ -51,8 +62,24 @@ class World:
         )  # blue=few loops, red=many
         s.reset()
 
+    def update_fert(s):
+        """Current fertility: the base map slid sideways, scaled by the season.
+
+        Depends only on t, so it is deterministic and needs no host sync."""
+        base = s.fert0
+        shift = int(s.t * FERT_DRIFT)
+        if shift:
+            base = base.roll(shift, 1)
+        season = 1 + SEASON_AMP * math.sin(TAU * s.t / SEASON_PERIOD)
+        s.fert = (base * season).clamp(min=0.01)
+
     def reset(s):
+        s.t = 0
+        s.update_fert()
         s.food = s.fert.clone()
+        s.sick = torch.zeros(N_MAX, dtype=torch.bool, device=DEV)
+        s.plague_left = 0  # steps of outbreak remaining
+        s.trail = None  # render's fading creature layer, allocated on first frame
         s.pos = torch.rand(N_MAX, 2, device=DEV) * s.size
         s.heading = torch.rand(N_MAX, device=DEV) * TAU
         s.energy = torch.ones(N_MAX, device=DEV)
@@ -65,7 +92,6 @@ class World:
         s.color = (
             torch.rand(N_MAX, 3, device=DEV) * 0.7 + 0.3
         )  # lineage colour, drifts on mutation
-        s.t = 0
 
     @torch.no_grad()
     def step(s):
@@ -74,6 +100,18 @@ class World:
         cy = s.pos[:, 1].long() % H
         cell = cy * W + cx
         count = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, alive_f)
+
+        # Plague: sick creatures infect others in their cell, and may recover.
+        if s.plague_left > 0:
+            sick_n = torch.zeros(H * W, device=DEV).scatter_add_(
+                0, cell, (s.sick & s.alive).float()
+            )
+            r = torch.rand(N_MAX, device=DEV)
+            catch = (sick_n[cell] > 0) & (r < PLAGUE_SPREAD)
+            s.sick = (s.sick | catch) & (torch.rand(N_MAX, device=DEV) > PLAGUE_RECOVER)
+            s.plague_left -= 1
+            if s.plague_left == 0:
+                s.sick[:] = False
 
         # Eat: creatures sharing a cell split what is there.
         food = s.food.view(-1)
@@ -105,12 +143,14 @@ class World:
 
         # Metabolism and death.
         s.energy += bite - (BASE_COST + MOVE_COST * speed + THINK_COST * s.loops)
+        s.energy -= PLAGUE_DRAIN * s.sick
         s.age += 1
         s.alive &= (s.energy > 0) & (s.age < MAX_AGE)
 
         s.reproduce()
-        s.food = torch.minimum(s.food + FOOD_GROWTH * s.fert, s.fert)
         s.t += 1
+        s.update_fert()
+        s.food = torch.minimum(s.food + FOOD_GROWTH * s.fert, s.fert)
 
     def reproduce(s):
         parents = (s.alive & (s.energy > REPRO_E)).nonzero().squeeze(1)
@@ -127,6 +167,7 @@ class World:
         s.heading[kids] = torch.rand(n, device=DEV) * TAU
         s.age[kids] = 0
         s.h[kids] = 0  # newborns start with a blank memory
+        s.sick[kids] = False
 
         s.genome[kids] = s.genome[parents] + torch.randn(n, G, device=DEV) * MUT_STD
         flip = (torch.rand(n, device=DEV) < LOOP_MUT_P).long()
@@ -136,6 +177,31 @@ class World:
             0.2, 1
         )
         s.alive[kids] = True
+
+    def meteor(s, x=None, y=None, r=METEOR_R):
+        """Wipe creatures and food in a disc (wrapping) at (x, y); random spot if omitted."""
+        c = (
+            torch.tensor([x, y], device=DEV)
+            if x is not None
+            else s.size * torch.rand(2, device=DEV)
+        )
+        half = s.size / 2
+        d = (s.pos - c + half) % s.size - half
+        s.alive &= (d**2).sum(1) > r * r
+        gy = torch.arange(H, device=DEV)[:, None]
+        gx = torch.arange(W, device=DEV)[None]
+        dy = (gy - c[1] + H / 2) % H - H / 2
+        dx = (gx - c[0] + W / 2) % W - W / 2
+        s.food[dx**2 + dy**2 <= r * r] = 0
+
+    def flood(s):
+        """Refill all food to the current fertility."""
+        s.food.copy_(s.fert)
+
+    def plague(s):
+        """Infect a random fraction of creatures; it spreads for PLAGUE_STEPS steps."""
+        s.sick |= s.alive & (torch.rand(N_MAX, device=DEV) < PLAGUE_START)
+        s.plague_left = PLAGUE_STEPS
 
     def stats(s):
         pop = int(s.alive.sum())

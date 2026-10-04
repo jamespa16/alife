@@ -109,6 +109,12 @@ def run_window(world, steps, log):
                     spf = min(spf * 2, 64)
                 elif e.key == pygame.K_DOWN:
                     spf = max(spf // 2, 1)
+                elif e.key == pygame.K_m:
+                    world.meteor(*pygame.mouse.get_pos())
+                elif e.key == pygame.K_f:
+                    world.flood()
+                elif e.key == pygame.K_p:
+                    world.plague()
 
         if not paused:
             for _ in range(spf):

@@ -6,16 +6,16 @@ Changes that touch the brain must keep `N_IN`, `N_OUT`, `G` and the slices in `b
 
 ## Phase 1: Quick wins
 
-### Glowing trails (S)
+### Glowing trails (S) ✅
 Fade the previous frame instead of clearing it, use additive blending, and optionally draw headings.
 - Touches: `render.py` (keep a persistent frame buffer, e.g. `img = img * DECAY` each frame).
 
-### Seasons and drifting land (S)
+### Seasons and drifting land (S) ✅
 `fert` is fixed forever at the moment. Rotate or drift it, swing it with a seasonal sine wave, and add dry spells that dim whole regions. When the world changes over time, the memory in `h` becomes worth having.
 - Touches: `World.step()` food regrowth; new constants `SEASON_PERIOD`, `SEASON_AMP`, `FERT_DRIFT`.
 - Watch: in the CSV, does `mean_loops` rise compared with a static world?
 
-### Disasters on a key press (S)
+### Disasters on a key press (S) ✅
 A god game: M drops a meteor (wipes a disc of creatures and food), F floods the map with food, P adds a plague (energy drain that spreads through crowded cells).
 - Touches: `app.py` key handling, plus a few `World` methods.
 

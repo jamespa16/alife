@@ -28,7 +28,7 @@ Testing notes:
 - `tests/test_cli.py` runs `python -m alife` in a subprocess, because `--set` must run before the sim modules are imported, and pytest has already imported them.
 - Worlds share torch's global RNG. To compare two seeded worlds, run them one after the other, not interleaved.
 
-Runtime keys: SPACE pauses, C switches the colour mode (lineage / loop count), and UP/DOWN doubles or halves the sim steps per frame (1–64). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
+Runtime keys: SPACE pauses, C switches the colour mode (lineage / loop count), and UP/DOWN doubles or halves the sim steps per frame (1–64), M drops a meteor at the mouse (`World.meteor`), F floods the map with food (`World.flood`), P starts a plague (`World.plague`). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
 
 Each CSV row comes from `World.census()`: `t`, `pop`, means of loops/energy/age/food, and `loops_1..loops_K_MAX` histogram counts. The same seed gives an identical CSV on the same device. `--set NAME=VALUE` overrides any int/float constant in `config.py`, except the derived ones (`N_IN`, `G`, `TAU`). In windowed mode, extinction resets the world, so `t` restarts in the log.
 
@@ -50,7 +50,7 @@ Module flow: `app` (CLI, logging, headless and pygame loops) → `world.World.st
 
 **Brains have memory across steps.** Each creature's hidden state `World.h [N_MAX, N_HID]` persists: `think(genome, loops, x, h)` starts from the previous step's `h` and returns `(out, new_h)`. Newborns start with `h = 0`.
 
-**Step order** (`World.step`): bin creatures into grid cells → eat (food split among creatures sharing a cell, capped at `EAT_RATE`) → sense (box-blurred food and density, sampled at `SENSE_ANGLES` and `SENSE_DIST` ahead) → think → move → metabolism, ageing and death → reproduce (energy > `REPRO_E` splits it in half; the child gets a mutated genome, loop count and lineage colour) → food regrows toward the fertility map `fert`.
+**Step order** (`World.step`): bin creatures into grid cells → eat (food split among creatures sharing a cell, capped at `EAT_RATE`) → sense (box-blurred food and density, sampled at `SENSE_ANGLES` and `SENSE_DIST` ahead) → think → move → metabolism, ageing and death → reproduce (energy > `REPRO_E` splits it in half; the child gets a mutated genome, loop count and lineage colour) → `t` advances and `fert` is recomputed (`update_fert`: the base map `fert0` slid sideways by `FERT_DRIFT` cells/step, scaled by `1 + SEASON_AMP*sin(TAU*t/SEASON_PERIOD)`; a function of `t` only) → food regrows toward `fert`. Plague runs at the start of the step while `plague_left > 0` (per-creature `sick` mask: spreads within a cell, drains `PLAGUE_DRAIN` energy). Newborns are healthy. `render` keeps a fading creature layer in `world.trail` (decay `TRAIL_DECAY` per frame, 0 disables).
 
 **Conventions and gotchas**
 - The world wraps in both axes: positions use `% W` / `% H`, and `blur` uses circular padding.

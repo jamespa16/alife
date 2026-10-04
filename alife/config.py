@@ -19,6 +19,22 @@ W = H = 768  # food grid size == window size
 N_MAX = 200_000  # creature slots
 N_INIT = 5_000
 FOOD_GROWTH = 0.003  # per step, scaled by local fertility
+SEASON_PERIOD = 2000  # steps per seasonal cycle
+SEASON_AMP = 0.4  # fertility swings by +-this fraction (0 = no seasons)
+FERT_DRIFT = 0.05  # cells per step the fertility map slides in x (0 = static land)
+
+# ---- display ----
+TRAIL_DECAY = 0.9  # per frame brightness kept by creature trails (0 = no trails)
+
+# ---- disasters (keys M, F, P) ----
+METEOR_R = 60.0  # radius of the meteor crater
+PLAGUE_STEPS = 400  # how long an outbreak keeps spreading
+PLAGUE_START = 0.05  # fraction of creatures infected at the start
+PLAGUE_SPREAD = (
+    0.2  # per step, chance of catching it from a sick creature in the same cell
+)
+PLAGUE_RECOVER = 0.01  # per step, chance a sick creature recovers
+PLAGUE_DRAIN = 0.05  # energy lost per step while sick
 
 # ---- body ----
 MAX_SPEED = 2.0  # cells per step
