@@ -16,6 +16,7 @@ from .config import (
     MAX_TURN,
     MOVE_COST,
     MUT_STD,
+    N_HID,
     N_INIT,
     N_MAX,
     REPRO_E,
@@ -58,6 +59,7 @@ class World:
         s.alive[:N_INIT] = True
         s.genome = torch.randn(N_MAX, G, device=DEV) * 0.5
         s.loops = torch.randint(1, 5, (N_MAX,), device=DEV)
+        s.h = torch.zeros(N_MAX, N_HID, device=DEV)  # brain memory, kept across steps
         s.color = (
             torch.rand(N_MAX, 3, device=DEV) * 0.7 + 0.3
         )  # lineage colour, drifts on mutation
@@ -88,7 +90,7 @@ class World:
         )
 
         # Act.
-        out = brain.think(s.genome, s.loops, x)
+        out, s.h = brain.think(s.genome, s.loops, x, s.h)
         turn = out[:, 0].tanh() * MAX_TURN
         speed = out[:, 1].sigmoid() * MAX_SPEED
         s.heading = (s.heading + turn) % TAU
@@ -118,6 +120,7 @@ class World:
         s.pos[kids] = s.pos[parents] + torch.randn(n, 2, device=DEV) * 2
         s.heading[kids] = torch.rand(n, device=DEV) * TAU
         s.age[kids] = 0
+        s.h[kids] = 0  # newborns start with a blank memory
 
         s.genome[kids] = s.genome[parents] + torch.randn(n, G, device=DEV) * MUT_STD
         flip = (torch.rand(n, device=DEV) < LOOP_MUT_P).long()
