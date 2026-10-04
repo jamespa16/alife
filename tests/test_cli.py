@@ -66,3 +66,13 @@ def test_pheromone_channels_set_derived_sizes(tmp_path, ch):
               "--log-every", "10", "--set", f"PHERO_CH={ch}", *SMALL)  # fmt: skip
     assert r.returncode == 0, r.stderr
     assert int(list(csv.DictReader(log.open()))[-1]["t"]) == 10
+
+
+@pytest.mark.parametrize("on", [0, 1])
+def test_predation_toggle_sets_sizes_and_columns(tmp_path, on):
+    log = tmp_path / "run.csv"
+    r = alife("--headless", "--steps", "10", "--seed", "1", "--log", str(log),
+              "--log-every", "10", "--set", f"PREDATION={on}", *SMALL)  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    row = list(csv.DictReader(log.open()))[-1]
+    assert ("mean_diet" in row) == bool(on)

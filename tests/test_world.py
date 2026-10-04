@@ -250,3 +250,90 @@ def test_pheromone_sensing_changes_creature_input():
 
     if config.PHERO_CH:
         assert not torch.allclose(run(True), run(False))
+
+
+def _set_attack(w, levels):
+    """Make creature i's attack output ~sigmoid(levels[i]) via bias and w_out."""
+    nh, no = config.N_HID, config.N_OUT
+    b = nh * config.N_IN + nh * nh
+    for i, lv in enumerate(levels):
+        w.genome[i, b : b + nh] = 5.0  # hidden state saturates at 1
+        w.genome[i, b + nh :] = 0
+        w.genome[i, b + nh + (no - 1) * nh :] = lv / nh
+
+
+def _arena(n=2):
+    """n creatures in one cell with a zero brain: attack output sigmoid(0) = 0.5."""
+    w = make_world()
+    w.alive[:] = False
+    w.alive[:n] = True
+    w.pos[:n] = 50.5
+    w.genome[:n] = 0
+    w.h[:n] = 0
+    w.energy[:n] = 1.0
+    w.food.zero_()
+    w.meat.zero_()
+    return w
+
+
+def test_attack_moves_energy_by_diet():
+    if not config.PREDATION:
+        pytest.skip("predation off")
+    w = _arena()
+    w.diet[:2] = 1.0
+    _set_attack(w, [20.0, -20.0])  # creature 0 hunts, creature 1 is passive prey
+    w.step()
+    gain = config.ATTACK_RATE  # full-strength attack, pure carnivore
+    assert float(w.energy[0]) == pytest.approx(1 + gain - 0.04, abs=0.03)
+    assert float(w.energy[1]) == pytest.approx(1 - gain - 0.04, abs=0.03)
+    w = _arena()
+    w.diet[:2] = torch.tensor([0.5, 0.5], device=DEV)
+    _set_attack(w, [20.0, -20.0])
+    w.step()  # half-digested: the predator gets half of what the prey loses
+    assert float(w.energy[0]) == pytest.approx(1 + gain / 2 - 0.04, abs=0.03)
+    assert float(w.energy[1]) == pytest.approx(1 - gain - 0.04, abs=0.03)
+
+
+def test_attack_needs_a_victim_and_diet_scales_gain():
+    if not config.PREDATION:
+        pytest.skip("predation off")
+    w = _arena(1)
+    w.diet[0] = 1.0
+    w.step()  # alone: pays attack cost, steals nothing
+    assert w.energy[0] < 1.0
+    w = _arena()
+    w.diet[:2] = 0.0  # two herbivores hurt each other and nobody gains
+    _set_attack(w, [20.0, 20.0])
+    w.step()
+    assert float(w.energy[:2].sum()) < 0.2
+
+
+def test_death_drops_meat_which_decays_and_is_eaten_by_diet():
+    if not config.PREDATION:
+        pytest.skip("predation off")
+    w = _arena(1)
+    w.energy[0] = 0.0001  # dies this step, leaving almost nothing
+    w.age[0] = config.MAX_AGE - 1  # dies of old age with real energy instead
+    w.energy[0] = 1.0
+    w.step()
+    assert not w.alive[0]
+    assert float(w.meat.sum()) == pytest.approx(
+        config.MEAT_DROP * 1.0 * config.MEAT_DECAY, rel=0.05
+    )
+    assert w.meat[50, 50] > 0
+    before = float(w.meat.sum())
+    w.step()
+    assert float(w.meat.sum()) == pytest.approx(before * config.MEAT_DECAY, rel=1e-4)
+    # A carnivore eats it, a herbivore does not.
+    for diet, eats in ((1.0, True), (0.0, False)):
+        w = _arena(1)
+        w.meat[50, 50] = 1.0
+        w.diet[0] = diet
+        w.step()
+        assert (float(w.meat[50, 50]) < config.MEAT_DECAY) == eats
+
+
+def test_census_has_diet():
+    if config.PREDATION:
+        row = make_world().census()
+        assert 0 <= row["mean_diet"] <= 1 and "carnivores" in row

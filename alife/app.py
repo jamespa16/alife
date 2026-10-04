@@ -104,7 +104,7 @@ def run_window(world, steps, log):
                 if e.key == pygame.K_SPACE:
                     paused = not paused
                 elif e.key == pygame.K_c:
-                    mode = 1 - mode
+                    mode = (mode + 1) % 3
                 elif e.key == pygame.K_UP:
                     spf = min(spf * 2, 64)
                 elif e.key == pygame.K_DOWN:
@@ -136,7 +136,7 @@ def run_window(world, steps, log):
             pygame.display.set_caption(
                 f"t={world.t}  pop={pop}  mean loops={loops:.2f}  "
                 f"{n / (now - last):.0f} steps/s  x{spf}  "
-                f"[{'lineage' if mode == 0 else 'loops'}]"
+                f"[{('lineage', 'loops', 'diet')[mode]}]"
             )
             last, n = now, 0
 

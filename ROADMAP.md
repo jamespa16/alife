@@ -25,7 +25,7 @@ A god game: M drops a meteor (wipes a disc of creatures and food), F floods the 
 Add 1–3 outputs that drop scent onto a grid that spreads (the existing `blur`) and fades each step. Sensors read it at `SENSE_ANGLES`. It's all grid ops, so it adds no extra GPU syncs. Expect trails, swarms, and maybe a "danger" signal once predators exist.
 - Touches: `N_OUT` += channels, `N_IN` += 3 × channels, `World.step()` sense and act, `render.py` overlay showing each channel as a coloured glow.
 
-### Predators and prey (M–L)
+### Predators and prey (M–L) ✅
 The biggest single change. Add an "attack" output: a creature with high attack takes energy from others in its cell, reusing the `cell` / `scatter_add_` binning that eating already uses. Add a diet gene that trades off plant digestion against meat digestion. Dead creatures drop their energy onto a `meat` grid that scavengers can sense.
 - Touches: `N_OUT` += 1, a new `diet` attribute, a new `meat` grid, sensor columns for meat and for the aggression of nearby creatures.
 - Watch: boom-and-bust cycles, herds running from hunters, and whether more loops now pay for their `THINK_COST`.

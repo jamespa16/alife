@@ -57,6 +57,17 @@ PHERO_RADIUS = 1  # blur radius used for diffusion
 PHERO_COST = 0.002  # energy per unit of scent dropped
 PHERO_GLOW = 1.0  # display brightness of each channel (render only)
 
+# ---- predation ----
+PREDATION = 1  # attack output, diet gene and meat grid (0 = off)
+ATTACK_BIAS = 3.0  # attack = sigmoid(output - this): newborn brains rarely attack
+ATTACK_RATE = 1.0  # energy a full-strength attack takes from each victim per step
+ATTACK_COST = 0.005  # energy per unit of attack output, hit or miss
+MEAT_DROP = 0.8  # fraction of a dead creature's energy left as meat
+MEAT_DECAY = 0.98  # per step, fraction of meat kept
+MEAT_EAT_RATE = 0.4  # max meat a pure carnivore eats per step
+DIET_MUT_STD = 0.05  # diet gene mutation per birth
+DIET_INIT = 1.0  # initial diet = rand ** DIET_INIT (higher = more herbivores)
+
 # ---- brain ----
 N_HID = 16
 K_MAX = 8  # max loop count
@@ -72,8 +83,10 @@ G: int
 def _derive():
     global N_IN, N_OUT, G
     # food x3, density x3, own energy, then each pheromone channel x3
-    N_IN = 2 * len(SENSE_ANGLES) + 1 + len(SENSE_ANGLES) * PHERO_CH
-    N_OUT = 2 + PHERO_CH  # turn, speed, then one deposit per pheromone channel
+    # then, if PREDATION, meat x3 and nearby aggression x3
+    N_IN = 2 * len(SENSE_ANGLES) + 1 + len(SENSE_ANGLES) * (PHERO_CH + 2 * PREDATION)
+    # turn, speed, one deposit per pheromone channel, then attack if PREDATION
+    N_OUT = 2 + PHERO_CH + PREDATION
     G = N_HID * N_IN + N_HID * N_HID + N_HID + N_OUT * N_HID  # genome length
 
 

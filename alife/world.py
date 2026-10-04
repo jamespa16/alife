@@ -7,8 +7,13 @@ import torch.nn.functional as F
 
 from . import brain
 from .config import (
+    ATTACK_BIAS,
+    ATTACK_COST,
+    ATTACK_RATE,
     BASE_COST,
     DEV,
+    DIET_INIT,
+    DIET_MUT_STD,
     EAT_RATE,
     FERT_DRIFT,
     FOOD_GROWTH,
@@ -17,6 +22,9 @@ from .config import (
     MAX_AGE,
     MAX_SPEED,
     MAX_TURN,
+    MEAT_DECAY,
+    MEAT_DROP,
+    MEAT_EAT_RATE,
     METEOR_R,
     MOVE_COST,
     MUT_STD,
@@ -35,6 +43,7 @@ from .config import (
     PLAGUE_SPREAD,
     PLAGUE_START,
     PLAGUE_STEPS,
+    PREDATION,
     REPRO_E,
     SEASON_AMP,
     SEASON_PERIOD,
@@ -86,6 +95,10 @@ class World:
         s.update_fert()
         s.food = s.fert.clone()
         s.phero = torch.zeros(PHERO_CH, H, W, device=DEV)  # scent, [channel, y, x]
+        s.meat = torch.zeros(H, W, device=DEV)  # carrion, decays; eaten by diet
+        s.aggr = torch.zeros(
+            H, W, device=DEV
+        )  # attack output summed per cell, last step
         s.sick = torch.zeros(N_MAX, dtype=torch.bool, device=DEV)
         s.plague_left = 0  # steps of outbreak remaining
         s.trail = None  # render's fading creature layer, allocated on first frame
@@ -98,6 +111,12 @@ class World:
         s.genome = torch.randn(N_MAX, G, device=DEV) * 0.5
         s.loops = torch.randint(1, 5, (N_MAX,), device=DEV)
         s.h = torch.zeros(N_MAX, N_HID, device=DEV)  # brain memory, kept across steps
+        # Diet gene: 0 = herbivore, 1 = carnivore. No RNG is drawn when predation is off.
+        s.diet = (
+            torch.rand(N_MAX, device=DEV) ** DIET_INIT
+            if PREDATION
+            else torch.zeros(N_MAX, device=DEV)
+        )
         s.color = (
             torch.rand(N_MAX, 3, device=DEV) * 0.7 + 0.3
         )  # lineage colour, drifts on mutation
@@ -125,8 +144,22 @@ class World:
         # Eat: creatures sharing a cell split what is there.
         food = s.food.view(-1)
         bite = (food[cell] / count[cell].clamp(min=1)).clamp(max=EAT_RATE) * alive_f
-        food.scatter_add_(0, cell, -bite)
-        food.clamp_(min=0)
+        if PREDATION:
+            # Plants feed herbivores (1 - diet), carrion feeds carnivores (diet); an
+            # eater only takes what it can digest. Meat bites are quantised and summed
+            # into an empty grid first so the unordered scatter_add_ is reproducible.
+            bite = (bite * (1 - s.diet) * 1024).floor() / 1024
+            meat = s.meat.view(-1)
+            mbite = (meat[cell] / count[cell].clamp(min=1)).clamp(max=MEAT_EAT_RATE)
+            mbite = (mbite * s.diet * alive_f * 1024).floor() / 1024
+            taken = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, mbite)
+            meat.sub_(taken).clamp_(min=0)
+            eaten = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, bite)
+            food.sub_(eaten).clamp_(min=0)
+            bite = bite + mbite
+        else:
+            food.scatter_add_(0, cell, -bite)
+            food.clamp_(min=0)
 
         # Sense: food and crowding at three points ahead, plus own energy.
         food_s = blur(s.food)
@@ -139,6 +172,9 @@ class World:
         if PHERO_CH:  # scent per channel at each sense point -> [N, 3 * PHERO_CH]
             smell = s.phero[:, sy, sx].tanh()  # [C, N, 3]
             sensors.append(smell.permute(1, 0, 2).reshape(N_MAX, -1))
+        if PREDATION:  # carrion and last step's aggression at each sense point
+            sensors.append(blur(s.meat)[sy, sx].tanh())
+            sensors.append(blur(s.aggr)[sy, sx].tanh())
         x = torch.cat(sensors, 1)
 
         # Act.
@@ -153,6 +189,21 @@ class World:
         s.heading = (s.heading + turn) % TAU
         s.pos[:, 0] = (s.pos[:, 0] + speed * s.heading.cos()) % W
         s.pos[:, 1] = (s.pos[:, 1] + speed * s.heading.sin()) % H
+
+        # Predation: attackers take energy from the other creatures in their cell
+        # (the cell they sensed in) and digest it by diet. Amounts are multiples of
+        # 1/1024, so the unordered scatter_add_ sums exactly.
+        atk = None
+        if PREDATION:
+            atk = (out[:, -1] - ATTACK_BIAS).sigmoid() * alive_f
+            atk = (atk * 1024).round() / 1024
+            a_cell = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, atk)
+            loss = ATTACK_RATE * (a_cell[cell] - atk) * alive_f  # others' attacks
+            loss = (loss.minimum(s.energy.clamp(min=0)) * 1024).floor() / 1024
+            stolen = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, loss)
+            share = atk / a_cell[cell].clamp(min=1e-6)
+            s.energy += stolen[cell] * share * s.diet - loss
+            s.aggr = a_cell.view(H, W)
 
         # Pheromones: drop scent where the creature stood when it sensed.
         drop = None
@@ -171,14 +222,26 @@ class World:
         s.energy += bite - (BASE_COST + MOVE_COST * speed + THINK_COST * s.loops)
         if drop is not None:
             s.energy -= PHERO_COST * drop.sum(0)
+        if atk is not None:
+            s.energy -= ATTACK_COST * atk
         s.energy -= PLAGUE_DRAIN * s.sick
         s.age += 1
-        s.alive &= (s.energy > 0) & (s.age < MAX_AGE)
+        was = s.alive
+        s.alive = was & (s.energy > 0) & (s.age < MAX_AGE)
+        if PREDATION:  # the dead leave what they had as carrion
+            left = (MEAT_DROP * s.energy.clamp(min=0) * (was & ~s.alive) * 1024).floor()
+            s.meat += (
+                torch.zeros(H * W, device=DEV)
+                .scatter_add_(0, cell, left / 1024)
+                .view(H, W)
+            )
 
         s.reproduce()
         s.t += 1
         s.update_fert()
         s.food = torch.minimum(s.food + FOOD_GROWTH * s.fert, s.fert)
+        if PREDATION:
+            s.meat *= MEAT_DECAY
         if PHERO_CH:  # scent spreads, then fades
             mixed = s.phero + PHERO_DIFFUSE * (blur(s.phero, PHERO_RADIUS) - s.phero)
             s.phero = mixed * PHERO_DECAY
@@ -199,6 +262,10 @@ class World:
         s.age[kids] = 0
         s.h[kids] = 0  # newborns start with a blank memory
         s.sick[kids] = False
+        if PREDATION:
+            s.diet[kids] = (
+                s.diet[parents] + torch.randn(n, device=DEV) * DIET_MUT_STD
+            ).clamp(0, 1)
 
         s.genome[kids] = s.genome[parents] + torch.randn(n, G, device=DEV) * MUT_STD
         flip = (torch.rand(n, device=DEV) < LOOP_MUT_P).long()
@@ -255,5 +322,9 @@ class World:
         row.update(
             zip(("mean_loops", "mean_energy", "mean_age", "food"), means.tolist())
         )
+        if PREDATION:
+            row["mean_diet"] = float(s.diet[a].mean().nan_to_num())
+            row["carnivores"] = int((s.diet[a] > 0.5).sum())
+            row["meat"] = float(s.meat.sum())
         row.update({f"loops_{k}": n for k, n in enumerate(hist.tolist(), 1)})
         return row
