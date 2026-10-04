@@ -27,6 +27,11 @@ def parse_args(argv):
         "--log-every", type=int, default=100, metavar="K", help="log every K steps"
     )
     p.add_argument(
+        "--species-log",
+        metavar="PATH",
+        help="write species births and extinctions to a CSV (needs SPECIES=1)",
+    )
+    p.add_argument(
         "--save", metavar="PATH", help="save the world here when the run ends"
     )
     p.add_argument(
@@ -78,6 +83,26 @@ class Logger:
         s.file.flush()  # a killed run still leaves usable data
 
 
+class SpeciesLog:
+    """Writes World.take_events() rows (t, event, species, parent_species, size) to a CSV.
+
+    Without a file it still drains the events, so they never pile up."""
+
+    FIELDS = ("t", "event", "species", "parent_species", "size")
+
+    def __init__(s, file=None):
+        s.file = file
+        if file is not None:
+            s.writer = csv.DictWriter(file, s.FIELDS, restval="")
+            s.writer.writeheader()
+
+    def drain(s, world):
+        events = world.take_events()
+        if s.file is not None and events:
+            s.writer.writerows(events)
+            s.file.flush()
+
+
 def snapshot_name():
     return time.strftime("alife-%Y%m%d-%H%M%S.alife")
 
@@ -87,12 +112,15 @@ def maybe_save(world, path, every):
         world.save(path)
 
 
-def run_headless(world, steps, log, save=None, save_every=None):
+def run_headless(world, steps, log, save=None, save_every=None, slog=None):
+    slog = slog or SpeciesLog()
     log.maybe_log(world)
+    slog.drain(world)
     last = time.time()
     while world.t < steps:
         world.step()
         log.maybe_log(world)
+        slog.drain(world)
         maybe_save(world, save, save_every)
         now = time.time()
         if now - last > 5 or world.t == steps:
@@ -104,18 +132,21 @@ def run_headless(world, steps, log, save=None, save_every=None):
             last = now
 
 
-def run_window(world, steps, log, save=None, save_every=None):
+def run_window(world, steps, log, save=None, save_every=None, slog=None):
     import pygame
 
-    from .config import HUD_HISTORY, H, W
+    from .config import HUD_HISTORY, SPECIES, H, W
     from .hud import draw_hud, make_hud
     from .render import render
 
+    slog = slog or SpeciesLog()
     pygame.init()
     screen = pygame.display.set_mode((W, H))
+    modes = ("lineage", "loops", "diet") + (("species",) if SPECIES else ())
     mode, spf, paused = 0, 1, False
     last, n = time.time(), 0
     log.maybe_log(world)
+    slog.drain(world)
     show_hud, rows = True, []
     hud, font = make_hud()
 
@@ -128,7 +159,7 @@ def run_window(world, steps, log, save=None, save_every=None):
                 if e.key == pygame.K_SPACE:
                     paused = not paused
                 elif e.key == pygame.K_c:
-                    mode = (mode + 1) % 3
+                    mode = (mode + 1) % len(modes)
                 elif e.key == pygame.K_UP:
                     spf = min(spf * 2, 64)
                 elif e.key == pygame.K_DOWN:
@@ -150,6 +181,7 @@ def run_window(world, steps, log, save=None, save_every=None):
             for _ in range(spf):
                 world.step()
                 log.maybe_log(world)
+                slog.drain(world)
                 maybe_save(world, save, save_every)
                 n += 1
                 if world.t == steps:
@@ -167,14 +199,16 @@ def run_window(world, steps, log, save=None, save_every=None):
             pop, loops = c["pop"], c["mean_loops"]
             if pop == 0:
                 world.reset()
+                slog.drain(world)
                 rows.clear()
             rows.append(c)
             del rows[:-HUD_HISTORY]
             draw_hud(hud, rows, font)
+            extra = f"  species={c['n_species']}" if "n_species" in c else ""
             pygame.display.set_caption(
-                f"t={world.t}  pop={pop}  mean loops={loops:.2f}  "
+                f"t={world.t}  pop={pop}  mean loops={loops:.2f}{extra}  "
                 f"{n / (now - last):.0f} steps/s  x{spf}  "
-                f"[{('lineage', 'loops', 'diet')[mode]}]"
+                f"[{modes[mode]}]"
             )
             last, n = now, 0
 
@@ -192,11 +226,17 @@ def main(argv=None):
     with contextlib.ExitStack() as stack:
         f = stack.enter_context(open(args.log, "w", newline="")) if args.log else None
         log = Logger(f, args.log_every)
+        sf = (
+            stack.enter_context(open(args.species_log, "w", newline=""))
+            if args.species_log
+            else None
+        )
+        slog = SpeciesLog(sf)
         try:
             if args.headless:
-                run_headless(world, args.steps, log, args.save, args.save_every)
+                run_headless(world, args.steps, log, args.save, args.save_every, slog)
             else:
-                run_window(world, args.steps, log, args.save, args.save_every)
+                run_window(world, args.steps, log, args.save, args.save_every, slog)
         except KeyboardInterrupt:
             pass
         if args.save:

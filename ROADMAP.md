@@ -37,7 +37,7 @@ Splitting needs a partner in the same cell, and the child's genome mixes both pa
 
 ## Phase 3: Bodies and terrain
 
-### Body-shape genes (M)
+### Body-shape genes (M) ✅
 Size, top speed, sensing range and number of sensors become genes, each with an energy cost. Bigger creatures beat smaller ones in fights. Expect body types to differ by region. Draw creatures at different sizes.
 - Touches: new per-creature attributes, metabolism costs, `render.py`.
 - Depends on: predators, for size to matter in fights. A variable number of sensors is hard to batch, so a cheaper version is to mask sensors off.
@@ -60,7 +60,7 @@ Graphs of population and the loop-count histogram over time, drawn in the window
 Click one to see its genome as a heatmap, its hidden state `h` updating live, its loop count, age and how far back its family line goes. Add zoom and pan, and a camera that follows the selected creature.
 - Touches: `app.py` mouse handling, `render.py` side panel.
 
-### Species tracking and family tree (L)
+### Species tracking and family tree (L) ✅
 Track a real species ID instead of slowly drifting colours, and log when lines split or die out.
 - Touches: a new `species` / `parent_id` attribute, periodic genome clustering, a new CSV.
 

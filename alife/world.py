@@ -63,6 +63,10 @@ from .config import (
     SEX,
     SEX_COST,
     SIZE_COST,
+    SPECIES,
+    SPECIES_DIST,
+    SPECIES_EVERY,
+    SPECIES_NEW_MAX,
     SPEED_COST,
     TAU,
     TERRAIN,
@@ -187,6 +191,23 @@ class World:
         s.color = (
             torch.rand(N_MAX, 3, device=DEV) * 0.7 + 0.3
         )  # lineage colour, drifts on mutation
+        # Family: unique id per birth (counter lives on the device), parent's id,
+        # generation depth, and species id (-1 until the first clustering pass).
+        s.uid = torch.where(
+            s.alive, torch.arange(N_MAX, device=DEV), -1
+        )  # founders are 0..N_INIT-1
+        s.next_uid = torch.full((1,), N_INIT, device=DEV)
+        s.parent_id = torch.full((N_MAX,), -1, device=DEV)
+        s.gen = torch.zeros(N_MAX, dtype=torch.long, device=DEV)
+        s.species = torch.full((N_MAX,), -1, device=DEV)
+        # Known species: ids, representative (mean) genomes and sizes at the last pass.
+        s.sp_ids = torch.zeros(0, dtype=torch.long, device=DEV)
+        s.sp_rep = torch.zeros(0, G, device=DEV)
+        s.sp_size = torch.zeros(0, dtype=torch.long, device=DEV)
+        s.next_species = 0
+        s.events = []  # species births and extinctions, drained by take_events()
+        if SPECIES:
+            s.update_species()
 
     @torch.no_grad()
     def step(s):
@@ -333,6 +354,8 @@ class World:
 
         s.reproduce()
         s.t += 1
+        if SPECIES and s.t % SPECIES_EVERY == 0:
+            s.update_species()  # rare, so its host syncs are fine
         s.update_fert()
         s.food = torch.minimum(s.food + FOOD_GROWTH * s.fert, s.fert)
         if PREDATION:
@@ -397,6 +420,7 @@ class World:
         for k, v in data["state"].items():
             setattr(s, k, v.to(DEV) if isinstance(v, torch.Tensor) else v)
         s.trail = None
+        s.events = []
         torch.set_rng_state(data["rng"]["cpu"])
         mod = _device_module()
         if mod is not None and "dev" in data["rng"]:
@@ -475,6 +499,7 @@ class World:
         s.loops[kids] = (loops + flip * sign).clamp(1, K_MAX)
         mix = (s.color[a] + s.color[b]) / 2
         s.color[kids] = (mix + torch.randn(n, 3, device=DEV) * 0.02).clamp(0.2, 1)
+        s.birth_ids(kids, a, b)
         s.alive[kids] = ok
 
     def reproduce(s):
@@ -511,7 +536,103 @@ class World:
         s.color[kids] = (s.color[parents] + torch.randn(n, 3, device=DEV) * 0.02).clamp(
             0.2, 1
         )
+        s.birth_ids(kids, parents, parents)
         s.alive[kids] = True
+
+    def birth_ids(s, kids, a, b):
+        """Give newborns a fresh uid and record family: parent_id is the first
+        parent, gen is one more than the older parent's, species is inherited from
+        the first parent until the next clustering pass. No host sync."""
+        n = len(kids)
+        s.parent_id[kids] = s.uid[a]
+        s.uid[kids] = s.next_uid + torch.arange(n, device=DEV)
+        s.next_uid += n
+        s.gen[kids] = torch.maximum(s.gen[a], s.gen[b]) + 1
+        s.species[kids] = s.species[a]
+
+    def _nearest(s, g, reps):
+        """(RMS distance, index) of the closest row of reps for each row of g."""
+        best = [(torch.cdist(c, reps) / G**0.5).min(1) for c in g.split(16384)]
+        return torch.cat([b[0] for b in best]), torch.cat([b[1] for b in best])
+
+    @torch.no_grad()
+    def update_species(s):
+        """Cluster living genomes into species whose ids persist across passes.
+
+        Creatures within SPECIES_DIST (RMS per gene) of a known species' mean genome
+        join it; the rest form new species by greedy leader clustering (at most
+        SPECIES_NEW_MAX per pass, stragglers join the nearest). A new species' parent
+        is the most common previous species among its members. Species left without
+        members go extinct. Both kinds of event are appended to s.events. Syncs the
+        host, so only call it rarely."""
+        idx = s.alive.nonzero().squeeze(1)
+        old_ids, old_size = s.sp_ids.tolist(), s.sp_size.tolist()
+        if len(idx) == 0:
+            for i, n in zip(old_ids, old_size):
+                s.events.append({"t": s.t, "event": "extinct", "species": i, "size": n})
+            s.sp_ids, s.sp_size = s.sp_ids[:0], s.sp_size[:0]
+            s.sp_rep = s.sp_rep[:0]
+            return
+        g = s.genome[idx]
+        prev = s.species[idx]
+        k_old = len(old_ids)
+        assigned = torch.full((len(idx),), -1, device=DEV)
+        if k_old:
+            d, a = s._nearest(g, s.sp_rep)
+            assigned = torch.where(d < SPECIES_DIST, a, assigned)
+        leaders = []
+        for _ in range(SPECIES_NEW_MAX):
+            free = assigned < 0
+            if not bool(free.any()):
+                break
+            lead = g[free.int().argmax()]
+            near = (g - lead).norm(dim=1) / G**0.5 < SPECIES_DIST
+            assigned = torch.where(free & near, k_old + len(leaders), assigned)
+            leaders.append(lead)
+        reps = torch.cat([s.sp_rep, torch.stack(leaders)]) if leaders else s.sp_rep
+        left = assigned < 0
+        if bool(left.any()):
+            assigned = torch.where(left, s._nearest(g, reps)[1], assigned)
+
+        k = len(reps)
+        counts = torch.bincount(assigned, minlength=k)
+        mean = torch.zeros(k, G, device=DEV).index_add_(0, assigned, g)
+        mean /= counts.clamp(min=1)[:, None]
+        counts_l = counts.tolist()
+        ids = old_ids + [s.next_species + j for j in range(len(leaders))]
+        a_cpu, prev_cpu = assigned.cpu(), prev.cpu()
+        for j in range(len(leaders)):
+            before = prev_cpu[a_cpu == k_old + j]
+            parent = int(torch.bincount(before + 1).argmax()) - 1
+            s.events.append(
+                {
+                    "t": s.t,
+                    "event": "new",
+                    "species": ids[k_old + j],
+                    "parent_species": parent,
+                    "size": counts_l[k_old + j],
+                }
+            )
+        for j in range(k_old):
+            if counts_l[j] == 0:
+                s.events.append(
+                    {
+                        "t": s.t,
+                        "event": "extinct",
+                        "species": ids[j],
+                        "size": old_size[j],
+                    }
+                )
+        s.next_species += len(leaders)
+        ids_t = torch.tensor(ids, device=DEV)
+        s.species[idx] = ids_t[assigned]
+        keep = counts > 0
+        s.sp_ids, s.sp_rep, s.sp_size = ids_t[keep], mean[keep], counts[keep]
+
+    def take_events(s):
+        """Return and clear the species events logged since the last call."""
+        ev, s.events = s.events, []
+        return ev
 
     def meteor(s, x=None, y=None, r=METEOR_R):
         """Wipe creatures and food in a disc (wrapping) at (x, y); random spot if omitted."""
@@ -568,5 +689,7 @@ class World:
         if BODY:
             for i, name in enumerate(("size", "speed", "sense")):
                 row[f"mean_{name}"] = float(s.body[a, i].mean().nan_to_num())
+        if SPECIES:
+            row["n_species"] = int(torch.unique(s.species[a]).numel())
         row.update({f"loops_{k}": n for k, n in enumerate(hist.tolist(), 1)})
         return row

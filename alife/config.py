@@ -98,6 +98,12 @@ WALL_FRAC = 0.10  # fraction of the map that is wall
 POISON_FRAC = 0.08  # fraction of the map that is poison
 POISON_DRAIN = 0.03  # energy lost per step in a poison cell
 
+# ---- species tracking (key C cycles colour modes, incl. species) ----
+SPECIES = 1  # periodic genome clustering gives each creature a species id (0 = off)
+SPECIES_EVERY = 500  # steps between clustering passes
+SPECIES_DIST = 0.55  # RMS per-gene genome distance within a species (random: ~0.7)
+SPECIES_NEW_MAX = 64  # at most this many new species per pass (rest join the nearest)
+
 # ---- brain ----
 N_HID = 16
 K_MAX = 8  # max loop count

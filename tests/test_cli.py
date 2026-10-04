@@ -138,3 +138,25 @@ def test_load_shape_mismatch_fails(tmp_path):
     )
     assert r.returncode != 0
     assert "N_HID" in r.stderr
+
+
+def test_species_log_and_n_species_column(tmp_path):
+    log, sp = tmp_path / "run.csv", tmp_path / "sp.csv"
+    r = alife("--headless", "--steps", "20", "--seed", "1", "--log", str(log),
+              "--species-log", str(sp), "--set", "SPECIES_EVERY=10", *SMALL)  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    assert "n_species" in next(csv.DictReader(log.open()))
+    rows = list(csv.DictReader(sp.open()))
+    assert rows and rows[0]["event"] == "new" and rows[0]["t"] == "0"
+    assert list(rows[0]) == ["t", "event", "species", "parent_species", "size"]
+
+
+def test_species_off_has_no_column_and_still_reproducible(tmp_path):
+    outs = []
+    for name in "ab":
+        log = tmp_path / f"{name}.csv"
+        r = alife("--headless", "--steps", "20", "--seed", "3", "--log", str(log),
+                  "--set", "SPECIES=0", *SMALL)  # fmt: skip
+        assert r.returncode == 0, r.stderr
+        outs.append(log.read_text())
+    assert outs[0] == outs[1] and "n_species" not in outs[0]

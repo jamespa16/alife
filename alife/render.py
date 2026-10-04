@@ -28,7 +28,7 @@ WALL_COLOR = torch.tensor([0.45, 0.45, 0.5], device=DEV)
 
 @torch.no_grad()
 def render(world, mode):
-    """mode 0: lineage colour, mode 1: loop count, mode 2: diet (blue herbivore, red carnivore). Returns a [W, H, 3] uint8 array."""
+    """mode 0: lineage colour, mode 1: loop count, mode 2: diet (blue herbivore, red carnivore), mode 3: species. Returns a [W, H, 3] uint8 array."""
     # Creatures leave glowing trails: the creature layer fades instead of clearing.
     if world.trail is None:
         world.trail = torch.zeros(H, W, 3, device=DEV)
@@ -50,6 +50,13 @@ def render(world, mode):
         col = world.color[idx]
     elif mode == 1:
         col = world.palette[world.loops[idx]]
+    elif mode == 3:  # species id -> hue by golden-ratio steps (-1 = unassigned: grey)
+        sp = world.species[idx]
+        hue = (sp * 0.618034) % 1
+        rgb = (
+            (hue[:, None] + torch.tensor([0.0, 2 / 3, 1 / 3], device=DEV)) % 1 * 6 - 3
+        ).abs() - 1
+        col = torch.where((sp < 0)[:, None], 0.5, rgb.clamp(0.15, 1))
     else:
         d = world.diet[idx]
         col = torch.stack([d, torch.full_like(d, 0.25), 1 - d], 1)

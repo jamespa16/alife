@@ -659,3 +659,117 @@ def test_load_warns_on_other_config_change(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "THINK_COST", 0.5)
     with pytest.warns(UserWarning, match="THINK_COST"):
         World.load(tmp_path / "w.alife")
+
+
+# ---- family and species ----
+
+
+@pytest.mark.parametrize("sex", [0, 1])
+def test_births_get_unique_uids_parents_and_generations(monkeypatch, sex):
+    monkeypatch.setattr(world, "SEX", sex)
+    monkeypatch.setattr(world, "SPECIES", 0)
+    w = make_world()
+    w.alive[:] = False
+    w.alive[:4] = True
+    w.energy[:4] = 2 * REPRO_E
+    w.pick[:] = 10.0
+    w.pos[:4] = w.pos[0]  # one shared cell, so sex pairs form
+    w.uid[:4] = torch.tensor([100, 101, 102, 103], device=DEV)
+    w.gen[:4] = torch.tensor([0, 5, 2, 1], device=DEV)
+    start = int(w.next_uid)
+    w.species[:4] = torch.tensor([7, 7, 8, 8], device=DEV)
+    w.reproduce()
+    kids = w.alive.nonzero().squeeze(1)
+    kids = kids[kids >= 4]
+    assert len(kids) >= 2
+    uids = w.uid[kids]
+    assert len(set(uids.tolist())) == len(kids) and (uids >= start).all()
+    assert int(w.next_uid) >= start + len(kids)
+    assert not (w.uid[:4] == uids[:, None]).any()
+    parents = w.parent_id[kids]
+    assert torch.isin(parents, torch.tensor([100, 101, 102, 103], device=DEV)).all()
+    first = torch.stack([(w.uid[:4] == p).nonzero()[0, 0] for p in parents])
+    if sex:  # one more than the older parent
+        assert (w.gen[kids] >= w.gen[first] + 1).all()
+        assert (w.gen[kids] >= 3).all() or (w.gen[first] < 5).all()
+    else:
+        assert (w.gen[kids] == w.gen[first] + 1).all()
+    assert (w.species[kids] == w.species[first]).all()  # inherited until next pass
+
+
+def test_uids_stay_unique_among_the_living(ran):
+    uids = ran.uid[ran.alive]
+    assert len(torch.unique(uids)) == len(uids)
+    assert int(ran.next_uid) > int(uids.max())
+
+
+def _clustered(centres, per=30, noise=0.01):
+    """World whose creatures sit in tight genome clusters around `centres` (G-vectors)."""
+    w = make_world()
+    w.sp_ids, w.sp_size, w.sp_rep = w.sp_ids[:0], w.sp_size[:0], w.sp_rep[:0]
+    w.species[:] = -1  # forget the species found at reset
+    w.alive[:] = False
+    n = len(centres) * per
+    w.alive[:n] = True
+    for k, c in enumerate(centres):
+        w.genome[k * per : (k + 1) * per] = (
+            c + torch.randn(per, config.G, device=DEV) * noise
+        )
+    return w
+
+
+def _far(n):
+    return [torch.randn(config.G, device=DEV) * 2 for _ in range(n)]
+
+
+def test_species_cluster_persist_and_log_splits_and_extinction():
+    a, b, c = _far(3)
+    w = _clustered([a, b])
+    w.take_events()
+    w.update_species()
+    ev = w.take_events()
+    assert [e["event"] for e in ev] == ["new", "new"]
+    ids = w.species[:60].clone()
+    assert len(set(ids[:30].tolist())) == 1 and len(set(ids[30:60].tolist())) == 1
+    assert ids[0] != ids[30]
+    assert len(w.sp_ids) == 2
+
+    # Same clusters, genomes jittered a little: ids persist, no events.
+    w.genome[:60] += torch.randn(60, config.G, device=DEV) * 0.01
+    w.update_species()
+    assert w.take_events() == [] and torch.equal(w.species[:60], ids)
+
+    # A third cluster appears (born from cluster a's slots) while cluster b dies out.
+    w.genome[30:60] = c + torch.randn(30, config.G, device=DEV) * 0.01
+    w.update_species()
+    ev = w.take_events()
+    new = [e for e in ev if e["event"] == "new"]
+    gone = [e for e in ev if e["event"] == "extinct"]
+    assert len(new) == 1 and len(gone) == 1
+    assert gone[0]["species"] == int(ids[30]) and gone[0]["size"] == 30
+    assert new[0]["species"] not in ids.tolist() and new[0]["size"] == 30
+    assert new[0]["parent_species"] == int(ids[30])  # majority previous label
+    assert torch.equal(w.species[:30], ids[:30])
+    assert w.census()["n_species"] == 2
+
+
+def test_species_pass_with_empty_world_and_when_off(monkeypatch):
+    w = _clustered(_far(1))
+    w.update_species()
+    w.take_events()
+    w.alive[:] = False
+    w.update_species()
+    assert [e["event"] for e in w.take_events()] == ["extinct"]
+    monkeypatch.setattr(world, "SPECIES", 0)
+    assert "n_species" not in make_world().census()
+
+
+def test_species_ids_survive_save_and_load(tmp_path):
+    w = make_world(2)
+    for _ in range(5):
+        w.step()
+    w.save(tmp_path / "w.alife")
+    w2 = World.load(tmp_path / "w.alife")
+    for k in ("uid", "parent_id", "gen", "species", "next_uid", "sp_ids", "sp_rep"):
+        assert torch.equal(getattr(w2, k), getattr(w, k)), k
+    assert w2.next_species == w.next_species and w2.events == []
