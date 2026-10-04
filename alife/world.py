@@ -38,6 +38,8 @@ from .config import (
     PHERO_DEPOSIT,
     PHERO_DIFFUSE,
     PHERO_RADIUS,
+    PICK_INIT,
+    PICK_MUT_STD,
     PLAGUE_DRAIN,
     PLAGUE_RECOVER,
     PLAGUE_SPREAD,
@@ -49,6 +51,8 @@ from .config import (
     SEASON_PERIOD,
     SENSE_ANGLES,
     SENSE_DIST,
+    SEX,
+    SEX_COST,
     TAU,
     THINK_COST,
     G,
@@ -115,6 +119,13 @@ class World:
         s.diet = (
             torch.rand(N_MAX, device=DEV) ** DIET_INIT
             if PREDATION
+            else torch.zeros(N_MAX, device=DEV)
+        )
+        # Mate preference gene: partners must be closer in colour than both picks.
+        # No RNG is drawn when sex is off.
+        s.pick = (
+            torch.rand(N_MAX, device=DEV) * PICK_INIT
+            if SEX
             else torch.zeros(N_MAX, device=DEV)
         )
         s.color = (
@@ -246,7 +257,70 @@ class World:
             mixed = s.phero + PHERO_DIFFUSE * (blur(s.phero, PHERO_RADIUS) - s.phero)
             s.phero = mixed * PHERO_DECAY
 
+    def pair_up(s, elig, k):
+        """Pick up to k mating pairs among the creatures `elig` (slot indices).
+
+        Shuffle, stable-sort by grid cell, then pair 1st+2nd, 3rd+4th... of each
+        cell's run; a pair needs colour distance below both partners' `pick`. Pairs
+        are taken in random order, so a full world gets a random subset. Returns
+        (a, b, ok) of length k: ok marks real pairs, the rest is padding.
+        No host syncs: invalid pairs are masked instead of compacted."""
+        m = len(elig)
+        e = elig[torch.randperm(m, device=DEV)]
+        cell = (s.pos[e, 1].long() % H) * W + s.pos[e, 0].long() % W
+        order = cell.sort(stable=True)[1]
+        e, cell = e[order], cell[order]
+        i = torch.arange(m, device=DEV)
+        new_run = torch.ones(m, dtype=torch.bool, device=DEV)
+        new_run[1:] = cell[1:] != cell[:-1]
+        rank = i - torch.where(new_run, i, 0).cummax(0)[0]  # place within its cell
+        nxt = e.roll(-1)
+        same = torch.zeros(m, dtype=torch.bool, device=DEV)
+        same[:-1] = cell[1:] == cell[:-1]
+        close = (s.color[e] - s.color[nxt]).norm(dim=1)
+        ok = (rank % 2 == 0) & same & (close < s.pick[e].minimum(s.pick[nxt]))
+        pick = torch.where(ok, torch.rand(m, device=DEV), 2.0).argsort()[:k]
+        return e[pick], nxt[pick], ok[pick]
+
+    def reproduce_sex(s):
+        elig = (s.alive & (s.energy > REPRO_E)).nonzero().squeeze(1)
+        free = (~s.alive).nonzero().squeeze(1)
+        n = min(len(elig) // 2, len(free))
+        if n == 0:
+            return
+        a, b, ok = s.pair_up(elig, n)
+        kids = free[:n]
+        # Both parents pay; the child gets the payments. Index_add of zeros for
+        # padding pairs, since those may repeat a real parent's slot.
+        pay_a = SEX_COST * s.energy[a] * ok
+        pay_b = SEX_COST * s.energy[b] * ok
+        s.energy.index_add_(0, a, -pay_a).index_add_(0, b, -pay_b)
+        s.energy[kids] = pay_a + pay_b
+        s.pos[kids] = (s.pos[a] + torch.randn(n, 2, device=DEV) * 2) % s.size
+        s.heading[kids] = torch.rand(n, device=DEV) * TAU
+        s.age[kids] = 0
+        s.h[kids] = 0
+        s.sick[kids] = False
+        # Uniform crossover per gene, then mutation; scalar genes mix or pick one.
+        from_a = torch.rand(n, G, device=DEV) < 0.5
+        child = torch.where(from_a, s.genome[a], s.genome[b])
+        s.genome[kids] = child + torch.randn(n, G, device=DEV) * MUT_STD
+        if PREDATION:
+            mix = (s.diet[a] + s.diet[b]) / 2
+            s.diet[kids] = (mix + torch.randn(n, device=DEV) * DIET_MUT_STD).clamp(0, 1)
+        mix = (s.pick[a] + s.pick[b]) / 2
+        s.pick[kids] = (mix + torch.randn(n, device=DEV) * PICK_MUT_STD).clamp(min=0)
+        flip = (torch.rand(n, device=DEV) < LOOP_MUT_P).long()
+        sign = torch.randint(0, 2, (n,), device=DEV) * 2 - 1
+        loops = torch.where(torch.rand(n, device=DEV) < 0.5, s.loops[a], s.loops[b])
+        s.loops[kids] = (loops + flip * sign).clamp(1, K_MAX)
+        mix = (s.color[a] + s.color[b]) / 2
+        s.color[kids] = (mix + torch.randn(n, 3, device=DEV) * 0.02).clamp(0.2, 1)
+        s.alive[kids] = ok
+
     def reproduce(s):
+        if SEX:
+            return s.reproduce_sex()
         parents = (s.alive & (s.energy > REPRO_E)).nonzero().squeeze(1)
         free = (~s.alive).nonzero().squeeze(1)
         n = min(len(parents), len(free))
@@ -326,5 +400,7 @@ class World:
             row["mean_diet"] = float(s.diet[a].mean().nan_to_num())
             row["carnivores"] = int((s.diet[a] > 0.5).sum())
             row["meat"] = float(s.meat.sum())
+        if SEX:
+            row["mean_pick"] = float(s.pick[a].mean().nan_to_num())
         row.update({f"loops_{k}": n for k, n in enumerate(hist.tolist(), 1)})
         return row

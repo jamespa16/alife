@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from alife import config
+from alife import config, world
 from alife.config import DEV, K_MAX, N_HID, N_MAX, REPRO_E, H, W
 from alife.world import World, blur
 
@@ -33,7 +33,8 @@ def test_state_stays_valid_after_running(ran):
     assert (w.h[a].abs() <= 1).all()  # tanh output
 
 
-def test_reproduce_splits_energy_and_initialises_child():
+def test_reproduce_splits_energy_and_initialises_child(monkeypatch):
+    monkeypatch.setattr(world, "SEX", 0)  # lone-parent splitting
     w = make_world()
     w.alive[:] = False
     parents = torch.tensor([3, 7], device=DEV)
@@ -56,7 +57,8 @@ def test_reproduce_splits_energy_and_initialises_child():
     assert ((w.loops[kids] >= 1) & (w.loops[kids] <= K_MAX)).all()
 
 
-def test_reproduce_needs_energy_and_free_slots():
+def test_reproduce_needs_energy_and_free_slots(monkeypatch):
+    monkeypatch.setattr(world, "SEX", 0)  # lone-parent splitting
     w = make_world()
     w.alive[:] = False
     w.alive[0] = True
@@ -337,3 +339,95 @@ def test_census_has_diet():
     if config.PREDATION:
         row = make_world().census()
         assert 0 <= row["mean_diet"] <= 1 and "carnivores" in row
+
+
+# ---- sexual reproduction ----
+
+
+def _sex_world(monkeypatch, n, mut=0.0):
+    """Empty world with creatures 0..n-1 alive, eligible, placed by the caller."""
+    monkeypatch.setattr(world, "SEX", 1)
+    monkeypatch.setattr(world, "MUT_STD", mut)
+    w = make_world()
+    w.alive[:] = False
+    w.alive[:n] = True
+    w.energy[:n] = 2 * REPRO_E
+    w.pick[:] = 10.0  # anyone mates with anyone
+    return w
+
+
+def test_pairing_only_within_a_cell(monkeypatch):
+    w = _sex_world(monkeypatch, 7)
+    # Cell A holds 0-2 (one pair, one left over), cell B holds 3-4, 5 and 6 are alone.
+    w.pos[:3] = 10.5
+    w.pos[3:5] = 20.5
+    w.pos[5] = 30.5
+    w.pos[6] = 40.5
+    for _ in range(5):
+        a, b, ok = w.pair_up(torch.arange(7, device=DEV), 3)
+        assert int(ok.sum()) == 2
+        a, b = a[ok], b[ok]
+        assert (w.pos[a] // 1 == w.pos[b] // 1).all()
+        assert len({*a.tolist(), *b.tolist()}) == 4  # nobody mates twice
+        assert not ({5, 6} & {*a.tolist(), *b.tolist()})
+
+
+def test_child_genes_come_from_one_parent_or_the_other(monkeypatch):
+    w = _sex_world(monkeypatch, 2)
+    w.pos[:2] = 5.5
+    w.genome[0] = 1.0
+    w.genome[1] = -1.0
+    w.loops[:2] = torch.tensor([2, 6], device=DEV)
+    w.color[:2] = 0.5
+    total = float(w.energy[:2].sum())
+    w.reproduce()
+    kids = (w.alive & (torch.arange(N_MAX, device=DEV) >= 2)).nonzero().squeeze(1)
+    assert len(kids) == 1
+    g = w.genome[kids[0]]
+    assert ((g == 1.0) | (g == -1.0)).all()
+    assert (g == 1.0).any() and (g == -1.0).any()  # mixed, not a copy
+    assert int(w.loops[kids[0]]) in (2, 6)
+    # Both parents paid, and the child got exactly what they paid.
+    assert (w.energy[:2] < 2 * REPRO_E).all()
+    assert float(w.energy[w.alive].sum()) == pytest.approx(total, rel=1e-5)
+    assert int(w.age[kids[0]]) == 0 and (w.h[kids[0]] == 0).all()
+
+
+def test_mate_preference_blocks_dissimilar_pairs(monkeypatch):
+    w = _sex_world(monkeypatch, 2)
+    w.pos[:2] = 5.5
+    w.color[0] = 0.3
+    w.color[1] = 1.0  # distance ~1.2
+    w.pick[:2] = torch.tensor([5.0, 0.5], device=DEV)  # one of them is choosy
+    w.reproduce()
+    assert int(w.alive.sum()) == 2
+    w.pick[:2] = 5.0  # now both are open-minded
+    w.reproduce()
+    assert int(w.alive.sum()) == 3
+
+
+def test_sex_respects_free_slots_and_needs_a_partner(monkeypatch):
+    w = _sex_world(monkeypatch, 1)  # a lone eligible creature
+    w.reproduce()
+    assert int(w.alive.sum()) == 1
+    w = _sex_world(monkeypatch, 40)
+    w.pos[:40] = 5.5  # one crowded cell: 20 pairs
+    w.alive[40:] = True
+    w.alive[-3:] = False  # only 3 free slots
+    w.energy[40:] = 0.0
+    w.reproduce()
+    assert int(w.alive.sum()) == N_MAX - 3 + 3
+    assert int((w.energy[:40] < 2 * REPRO_E).sum()) == 6  # 3 pairs paid
+
+
+def test_sex_world_runs_and_is_deterministic(monkeypatch):
+    monkeypatch.setattr(world, "SEX", 1)
+    runs = []
+    for _ in range(2):
+        w = make_world(2)
+        for _ in range(15):
+            w.step()
+        runs.append(w)
+    for name in ("pos", "energy", "alive", "genome", "pick", "color"):
+        assert torch.equal(getattr(runs[0], name), getattr(runs[1], name)), name
+    assert torch.isfinite(runs[0].energy).all()

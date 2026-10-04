@@ -76,3 +76,13 @@ def test_predation_toggle_sets_sizes_and_columns(tmp_path, on):
     assert r.returncode == 0, r.stderr
     row = list(csv.DictReader(log.open()))[-1]
     assert ("mean_diet" in row) == bool(on)
+
+
+@pytest.mark.parametrize("on", [0, 1])
+def test_sex_toggle_runs_and_sets_columns(tmp_path, on):
+    log = tmp_path / "run.csv"
+    r = alife("--headless", "--steps", "10", "--seed", "1", "--log", str(log),
+              "--log-every", "10", "--set", f"SEX={on}", *SMALL)  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    row = list(csv.DictReader(log.open()))[-1]
+    assert ("mean_pick" in row) == bool(on)

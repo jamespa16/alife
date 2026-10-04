@@ -68,6 +68,12 @@ MEAT_EAT_RATE = 0.4  # max meat a pure carnivore eats per step
 DIET_MUT_STD = 0.05  # diet gene mutation per birth
 DIET_INIT = 1.0  # initial diet = rand ** DIET_INIT (higher = more herbivores)
 
+# ---- sexual reproduction ----
+SEX = 1  # 1 = two parents in the same cell, genes mixed; 0 = a lone parent splits
+SEX_COST = 0.4  # fraction of its energy each parent pays; the child gets both payments
+PICK_INIT = 1.5  # initial mate-choosiness = rand * this (colour distance, max ~1.2)
+PICK_MUT_STD = 0.02  # mate-choosiness mutation per birth
+
 # ---- brain ----
 N_HID = 16
 K_MAX = 8  # max loop count

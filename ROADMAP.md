@@ -31,7 +31,7 @@ The biggest single change. Add an "attack" output: a creature with high attack t
 - Watch: boom-and-bust cycles, herds running from hunters, and whether more loops now pay for their `THINK_COST`.
 - Depends on: nothing, but it gets much better with pheromones.
 
-### Sexual reproduction (M)
+### Sexual reproduction (M) ✅
 Splitting needs a partner in the same cell, and the child's genome mixes both parents. A "mate preference" gene that compares colour or genome should let species form and split apart.
 - Touches: `World.reproduce()` (finding a partner per cell is the tricky part to batch).
 
