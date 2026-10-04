@@ -42,7 +42,7 @@ Size, top speed, sensing range and number of sensors become genes, each with an 
 - Touches: new per-creature attributes, metabolism costs, `render.py`.
 - Depends on: predators, for size to matter in fights. A variable number of sensors is hard to batch, so a cheaper version is to mask sensors off.
 
-### Terrain (M)
+### Terrain (M) ✅
 Walls or water cells that block movement and sensing, and poison zones. Mazes reward creatures that plan.
 - Touches: a new `terrain` grid, movement collision in `World.step()`, `render.py`.
 

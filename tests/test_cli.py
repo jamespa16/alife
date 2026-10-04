@@ -89,10 +89,10 @@ def test_sex_toggle_runs_and_sets_columns(tmp_path, on):
 
 
 @pytest.mark.parametrize("on", [0, 1])
-def test_body_toggle_runs(tmp_path, on):
+def test_body_and_terrain_toggles_run(tmp_path, on):
     log = tmp_path / "run.csv"
     r = alife("--headless", "--steps", "10", "--seed", "1", "--log", str(log),
-              "--log-every", "10", "--set", f"BODY={on}",
+              "--log-every", "10", "--set", f"BODY={on}", "--set", f"TERRAIN={on}",
               *SMALL)  # fmt: skip
     assert r.returncode == 0, r.stderr
     row = list(csv.DictReader(log.open()))[-1]

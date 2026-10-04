@@ -86,6 +86,13 @@ SENSE_COST = 0.002  # per unit of sensing-range multiplier
 BIG_SIZE = 1.3  # render only: bigger than this is drawn 2x2, bigger than BIG_SIZE2 3x3
 BIG_SIZE2 = 1.7
 
+# ---- terrain ----
+TERRAIN = 1  # walls that block movement and growth, poison zones (0 = off)
+TERRAIN_SCALE = 20  # noise cells across the map (smaller = bigger blobs)
+WALL_FRAC = 0.10  # fraction of the map that is wall
+POISON_FRAC = 0.08  # fraction of the map that is poison
+POISON_DRAIN = 0.03  # energy lost per step in a poison cell
+
 # ---- brain ----
 N_HID = 16
 K_MAX = 8  # max loop count
@@ -103,6 +110,8 @@ def _derive():
     # food x3, density x3, own energy, then each pheromone channel x3
     # then, if PREDATION, meat x3 and nearby aggression x3
     N_IN = 2 * len(SENSE_ANGLES) + 1 + len(SENSE_ANGLES) * (PHERO_CH + 2 * PREDATION)
+    # then, if TERRAIN, wall x3 and poison x3
+    N_IN += 2 * len(SENSE_ANGLES) * TERRAIN
     # turn, speed, one deposit per pheromone channel, then attack if PREDATION
     N_OUT = 2 + PHERO_CH + PREDATION
     G = N_HID * N_IN + N_HID * N_HID + N_HID + N_OUT * N_HID  # genome length

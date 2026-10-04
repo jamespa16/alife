@@ -147,8 +147,9 @@ def test_seasons_swing_fertility_and_drift_is_deterministic():
     assert torch.equal(base, w.fert0)  # base map untouched
     w.t = 0
     w.update_fert()
+    open_ = ~w.wall
     assert torch.allclose(
-        w.fert, base, atol=1e-6
+        w.fert[open_], base[open_], atol=1e-6
     )  # start of cycle: no scaling, no drift
 
 
@@ -276,6 +277,11 @@ def _arena(n=2):
     w.food.zero_()
     w.meat.zero_()
     w.body[:] = 1.0  # average bodies
+    w.wall[:] = False  # the arena is open ground
+    w.poison[:] = False
+    w.open.fill_(1)
+    w.poison_flat.zero_()
+    w.terr_s.zero_()
     return w
 
 
@@ -508,3 +514,96 @@ def test_census_has_body_means():
     if config.BODY:
         row = make_world().census()
         assert 0.5 <= row["mean_size"] <= 2 and "mean_sense" in row
+
+
+# ---- terrain ----
+
+
+def _walled():
+    """World with a wall column at x=61..63 and one lone creature at x=58.5."""
+    w = _arena(1)
+    w.wall[:] = False
+    w.poison[:] = False
+    w.wall[:, 61:64] = True
+    w.open = (~w.wall).float()
+    w.poison_flat = w.poison.float().view(-1)
+    w.terr_s = world.blur(torch.stack([w.wall.float(), w.poison.float()]), 2)
+    w.pos[0] = torch.tensor([58.5, 50.5], device=DEV)
+    w.heading[0] = 0.0
+    w.body[0] = 1.0
+    w.genome[0] = 0
+    return w
+
+
+def test_terrain_generated_mostly_open():
+    if not config.TERRAIN:
+        pytest.skip("terrain off")
+    w = make_world()
+    assert 0.5 * config.WALL_FRAC < float(w.wall.float().mean()) < 2 * config.WALL_FRAC
+    assert w.poison.any() and not (w.poison & w.wall).any()
+    assert (w.fert[w.wall] == 0).all() and (w.food[w.wall] == 0).all()
+    inside = w.wall[w.pos[:, 1].long() % H, w.pos[:, 0].long() % W]
+    assert not inside[
+        :100
+    ].any()  # nobody starts in a wall (barring rare redraw misses)
+
+
+def test_walls_block_movement():
+    if not config.TERRAIN:
+        pytest.skip("terrain off")
+    w = _walled()
+    w.body[0, 1] = 2.0  # fast: would reach x=62.5 within a few steps
+    for _ in range(10):
+        w.step()
+        assert float(w.pos[0, 0]) < 61
+    assert float(w.pos[0, 0]) > 58.6  # it did move up to the wall
+    # A diagonal approach slides along the wall instead of sticking to it.
+    w = _walled()
+    w.pos[0] = torch.tensor([60.9, 50.5], device=DEV)
+    w.heading[0] = 0.0
+    w.body[0, 1] = 2.0
+    w.step()
+    assert float(w.pos[0, 0]) == pytest.approx(60.9)
+
+
+def test_walls_stop_food_and_flood():
+    if not config.TERRAIN:
+        pytest.skip("terrain off")
+    w = make_world()
+    w.flood()
+    assert (w.food[w.wall] == 0).all() and (w.food[~w.wall] > 0).all()
+
+
+def test_poison_drains_energy():
+    if not config.TERRAIN:
+        pytest.skip("terrain off")
+    w = _walled()
+    w.step()
+    clean = float(w.energy[0])
+    w = _walled()
+    w.poison[50, 58:61] = True
+    w.poison_flat = w.poison.float().view(-1)
+    w.heading[0] = 0.0
+    w.pos[0] = torch.tensor([58.0, 50.5], device=DEV)
+    w.genome[0] = 0
+    w.step()
+    assert clean - float(w.energy[0]) == pytest.approx(config.POISON_DRAIN, abs=0.005)
+
+
+def test_terrain_sensors_see_walls_and_poison():
+    if not config.TERRAIN:
+        pytest.skip("terrain off")
+
+    def run(wall):
+        w = _walled()
+        w.wall[:] = False
+        if wall:
+            w.wall[:, 61:64] = True
+        w.terr_s = world.blur(torch.stack([w.wall.float(), w.poison.float()]), 2)
+        torch.manual_seed(1)
+        w.genome[0] = torch.randn(config.G, device=DEV)
+        w.pos[0, 0] = 56.5  # wall is within SENSE_DIST ahead
+        w.step()
+        return w.h[0].clone()
+
+    assert not torch.allclose(run(True), run(False))

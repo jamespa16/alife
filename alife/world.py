@@ -50,6 +50,8 @@ from .config import (
     PLAGUE_SPREAD,
     PLAGUE_START,
     PLAGUE_STEPS,
+    POISON_DRAIN,
+    POISON_FRAC,
     PREDATION,
     REPRO_E,
     SEASON_AMP,
@@ -62,7 +64,10 @@ from .config import (
     SIZE_COST,
     SPEED_COST,
     TAU,
+    TERRAIN,
+    TERRAIN_SCALE,
     THINK_COST,
+    WALL_FRAC,
     G,
     H,
     W,
@@ -101,9 +106,32 @@ class World:
             base = base.roll(shift, 1)
         season = 1 + SEASON_AMP * math.sin(TAU * s.t / SEASON_PERIOD)
         s.fert = (base * season).clamp(min=0.01)
+        if TERRAIN:  # nothing grows in walls
+            s.fert = s.fert * s.open
+
+    def make_terrain(s):
+        """Walls and poison from blurred noise: blobs, so most of the map stays open.
+
+        Draws RNG only when TERRAIN is on."""
+        s.wall = torch.zeros(H, W, dtype=torch.bool, device=DEV)
+        s.poison = torch.zeros(H, W, dtype=torch.bool, device=DEV)
+        if TERRAIN:
+
+            def blobs(frac):
+                n = torch.rand(1, 1, TERRAIN_SCALE, TERRAIN_SCALE, device=DEV)
+                n = F.interpolate(n, size=(H, W), mode="bicubic")[0, 0]
+                return n > torch.quantile(n.flatten(), 1 - frac)
+
+            s.wall = blobs(WALL_FRAC)
+            s.poison = blobs(POISON_FRAC) & ~s.wall
+        s.open = (~s.wall).float()
+        s.poison_flat = s.poison.float().view(-1)
+        # Sensors read these, blurred a little so a wall is felt before it is hit.
+        s.terr_s = blur(torch.stack([s.wall.float(), s.poison.float()]), 2)
 
     def reset(s):
         s.t = 0
+        s.make_terrain()
         s.update_fert()
         s.food = s.fert.clone()
         s.phero = torch.zeros(PHERO_CH, H, W, device=DEV)  # scent, [channel, y, x]
@@ -115,6 +143,12 @@ class World:
         s.plague_left = 0  # steps of outbreak remaining
         s.trail = None  # render's fading creature layer, allocated on first frame
         s.pos = torch.rand(N_MAX, 2, device=DEV) * s.size
+        if TERRAIN:  # don't start inside a wall: redraw those a few times
+            for _ in range(4):
+                bad = s.wall[s.pos[:, 1].long() % H, s.pos[:, 0].long() % W]
+                s.pos = torch.where(
+                    bad[:, None], torch.rand(N_MAX, 2, device=DEV) * s.size, s.pos
+                )
         s.heading = torch.rand(N_MAX, device=DEV) * TAU
         s.energy = torch.ones(N_MAX, device=DEV)
         s.age = torch.zeros(N_MAX, dtype=torch.long, device=DEV)
@@ -202,6 +236,8 @@ class World:
         if PREDATION:  # carrion and last step's aggression at each sense point
             sensors.append(blur(s.meat)[sy, sx].tanh())
             sensors.append(blur(s.aggr)[sy, sx].tanh())
+        if TERRAIN:  # wall and poison at each sense point -> [N, 6]
+            sensors.append(s.terr_s[:, sy, sx].permute(1, 0, 2).reshape(N_MAX, -1))
         x = torch.cat(sensors, 1)
 
         # Act.
@@ -214,8 +250,22 @@ class World:
         speed = out[:, 1].sigmoid() * MAX_SPEED * s.body[:, 1]
         # To add an output: it is column 2 + PHERO_CH + ...; bump N_OUT in config.
         s.heading = (s.heading + turn) % TAU
-        s.pos[:, 0] = (s.pos[:, 0] + speed * s.heading.cos()) % W
-        s.pos[:, 1] = (s.pos[:, 1] + speed * s.heading.sin()) % H
+        ox, oy = s.pos[:, 0], s.pos[:, 1]
+        nx = (ox + speed * s.heading.cos()) % W
+        ny = (oy + speed * s.heading.sin()) % H
+        if TERRAIN:  # walls block: slide along one axis if that is open, else stay
+
+            def blocked(x, y):
+                return s.wall[y.long() % H, x.long() % W]
+
+            hit = blocked(nx, ny)
+            x_ok = ~blocked(nx, oy)
+            y_ok = ~blocked(ox, ny)
+            nx, ny = (
+                torch.where(hit, torch.where(x_ok, nx, ox), nx),
+                torch.where(hit, torch.where(x_ok, oy, torch.where(y_ok, ny, oy)), ny),
+            )
+        s.pos[:, 0], s.pos[:, 1] = nx, ny
 
         # Predation: attackers take energy from the other creatures in their cell
         # (the cell they sensed in) and digest it by diet. Amounts are multiples of
@@ -258,6 +308,10 @@ class World:
             b = s.body
             s.energy -= (
                 SIZE_COST * b[:, 0] + SPEED_COST * b[:, 1] + SENSE_COST * b[:, 2]
+            )
+        if TERRAIN:  # poison drains whoever stands in it
+            s.energy -= (
+                POISON_DRAIN * s.poison_flat[(ny.long() % H) * W + nx.long() % W]
             )
         s.age += 1
         was = s.alive
@@ -305,6 +359,14 @@ class World:
         pick = torch.where(ok, torch.rand(m, device=DEV), 2.0).argsort()[:k]
         return e[pick], nxt[pick], ok[pick]
 
+    def birth_pos(s, parent_pos):
+        """A newborn's position: near its parent, but never inside a wall."""
+        p = (parent_pos + torch.randn(len(parent_pos), 2, device=DEV) * 2) % s.size
+        if TERRAIN:
+            bad = s.wall[p[:, 1].long() % H, p[:, 0].long() % W]
+            p = torch.where(bad[:, None], parent_pos, p)
+        return p
+
     def reproduce_sex(s):
         elig = (s.alive & (s.energy > REPRO_E)).nonzero().squeeze(1)
         free = (~s.alive).nonzero().squeeze(1)
@@ -319,7 +381,7 @@ class World:
         pay_b = SEX_COST * s.energy[b] * ok
         s.energy.index_add_(0, a, -pay_a).index_add_(0, b, -pay_b)
         s.energy[kids] = pay_a + pay_b
-        s.pos[kids] = (s.pos[a] + torch.randn(n, 2, device=DEV) * 2) % s.size
+        s.pos[kids] = s.birth_pos(s.pos[a])
         s.heading[kids] = torch.rand(n, device=DEV) * TAU
         s.age[kids] = 0
         s.h[kids] = 0
@@ -359,7 +421,7 @@ class World:
 
         s.energy[parents] *= 0.5
         s.energy[kids] = s.energy[parents]
-        s.pos[kids] = (s.pos[parents] + torch.randn(n, 2, device=DEV) * 2) % s.size
+        s.pos[kids] = s.birth_pos(s.pos[parents])
         s.heading[kids] = torch.rand(n, device=DEV) * TAU
         s.age[kids] = 0
         s.h[kids] = 0  # newborns start with a blank memory

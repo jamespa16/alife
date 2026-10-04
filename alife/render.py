@@ -10,6 +10,7 @@ from .config import (
     PHERO_CH,
     PHERO_GLOW,
     PREDATION,
+    TERRAIN,
     TRAIL_DECAY,
     H,
     W,
@@ -19,6 +20,10 @@ from .config import (
 PHERO_COLORS = torch.tensor(
     [[1.0, 0.2, 0.8], [0.2, 0.9, 1.0], [1.0, 0.9, 0.2]], device=DEV
 )[torch.arange(PHERO_CH) % 3]
+
+
+PURPLE = torch.tensor([0.35, 0.0, 0.5], device=DEV)
+WALL_COLOR = torch.tensor([0.45, 0.45, 0.5], device=DEV)
 
 
 @torch.no_grad()
@@ -35,6 +40,9 @@ def render(world, mode):
         img += torch.einsum("chw,cr->hwr", glow, PHERO_COLORS) * 0.6
     if PREDATION:  # carrion as a dull red glow
         img[..., 0] += (world.meat * 0.5).tanh() * 0.5
+    if TERRAIN:  # poison as a purple stain, walls as solid grey
+        img += world.poison[..., None] * PURPLE
+        img = torch.where(world.wall[..., None], WALL_COLOR, img)
     idx = world.alive.nonzero().squeeze(1)
     cx = world.pos[idx, 0].long() % W
     cy = world.pos[idx, 1].long() % H
