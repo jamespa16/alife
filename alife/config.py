@@ -104,6 +104,11 @@ SPECIES_EVERY = 500  # steps between clustering passes
 SPECIES_DIST = 0.55  # RMS per-gene genome distance within a species (random: ~0.7)
 SPECIES_NEW_MAX = 64  # at most this many new species per pass (rest join the nearest)
 
+# ---- inspector (windowed only) ----
+INSPECT_W = 280  # side panel width in pixels
+ZOOM_MAX = 16  # mouse wheel zoom limit
+PICK_RADIUS = 14  # click within this many screen pixels of a creature to select it
+
 # ---- brain ----
 N_HID = 16
 K_MAX = 8  # max loop count

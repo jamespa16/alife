@@ -135,13 +135,15 @@ def run_headless(world, steps, log, save=None, save_every=None, slog=None):
 def run_window(world, steps, log, save=None, save_every=None, slog=None):
     import pygame
 
-    from .config import HUD_HISTORY, SPECIES, H, W
+    from .config import HUD_HISTORY, INSPECT_W, PICK_RADIUS, SPECIES, H, W
     from .hud import draw_hud, make_hud
+    from .panel import Inspector, View, draw_panel, make_panel
     from .render import render
 
     slog = slog or SpeciesLog()
     pygame.init()
     screen = pygame.display.set_mode((W, H))
+    frame = pygame.Surface((W, H))  # the full-world picture; the view crops it
     modes = ("lineage", "loops", "diet") + (("species",) if SPECIES else ())
     mode, spf, paused = 0, 1, False
     last, n = time.time(), 0
@@ -149,29 +151,58 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
     slog.drain(world)
     show_hud, rows = True, []
     hud, font = make_hud()
+    panel, pfont = make_panel()
+    view, insp, follow = View(), Inspector(), False
 
     running = True
     while running:
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False
+            elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                if not (
+                    insp.data is not None and e.pos[0] >= W - INSPECT_W
+                ):  # not on the panel
+                    wx, wy = view.to_world(*e.pos)
+                    insp.select(world, wx, wy, PICK_RADIUS / view.zoom)
+            elif e.type == pygame.MOUSEWHEEL:
+                view.zoom_at(*pygame.mouse.get_pos(), 1.25**e.y)
+            elif e.type == pygame.MOUSEMOTION and e.buttons[2]:
+                view.pan(*e.rel)
+                follow = False
             elif e.type == pygame.KEYDOWN:
                 if e.key == pygame.K_SPACE:
                     paused = not paused
                 elif e.key == pygame.K_c:
                     mode = (mode + 1) % len(modes)
+                elif e.key == pygame.K_UP and e.mod & pygame.KMOD_SHIFT:
+                    view.pan(0, 40)
+                elif e.key == pygame.K_DOWN and e.mod & pygame.KMOD_SHIFT:
+                    view.pan(0, -40)
+                elif e.key == pygame.K_LEFT and e.mod & pygame.KMOD_SHIFT:
+                    view.pan(40, 0)
+                elif e.key == pygame.K_RIGHT and e.mod & pygame.KMOD_SHIFT:
+                    view.pan(-40, 0)
                 elif e.key == pygame.K_UP:
                     spf = min(spf * 2, 64)
                 elif e.key == pygame.K_DOWN:
                     spf = max(spf // 2, 1)
                 elif e.key == pygame.K_m:
-                    world.meteor(*pygame.mouse.get_pos())
+                    world.meteor(*view.to_world(*pygame.mouse.get_pos()))
                 elif e.key == pygame.K_f:
                     world.flood()
                 elif e.key == pygame.K_p:
                     world.plague()
                 elif e.key == pygame.K_h:
                     show_hud = not show_hud
+                elif e.key == pygame.K_v:
+                    follow = not follow
+                elif e.key == pygame.K_0:
+                    view.reset()
+                    follow = False
+                elif e.key == pygame.K_ESCAPE:
+                    insp.clear()
+                    follow = False
                 elif e.key == pygame.K_s:
                     name = snapshot_name()
                     world.save(name)
@@ -188,9 +219,24 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
                     running = False
                     break
 
-        pygame.surfarray.blit_array(screen, render(world, mode))
+        if not paused or not insp.dead:
+            insp.refresh(world)  # one small fetch per frame, for the selection only
+        if follow and insp.data is not None:
+            view.center_on(*insp.data["pos"])
+
+        pygame.surfarray.blit_array(frame, render(world, mode))
+        if view.zoom == 1:
+            screen.blit(frame, (0, 0))
+        else:
+            pygame.transform.scale(frame.subsurface(view.rect()), (W, H), screen)
         if show_hud:
             screen.blit(hud, (0, 0))
+        if insp.data is not None:
+            sx, sy = view.to_screen(*insp.data["pos"])
+            color = (255, 90, 90) if insp.dead else (255, 255, 255)
+            pygame.draw.circle(screen, color, (round(sx), round(sy)), 10, 1)
+            draw_panel(panel, insp.data, insp.dead, pfont)
+            screen.blit(panel, (W - INSPECT_W, 0))
         pygame.display.flip()
 
         now = time.time()
@@ -200,6 +246,7 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
             if pop == 0:
                 world.reset()
                 slog.drain(world)
+                insp.clear()
                 rows.clear()
             rows.append(c)
             del rows[:-HUD_HISTORY]

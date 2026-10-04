@@ -56,7 +56,7 @@ Save every tensor to disk, reload it, and fork a run from any point. That makes 
 Graphs of population and the loop-count histogram over time, drawn in the window. The data already comes from `census()`.
 - Touches: `app.py` / `render.py`. Sample every 0.5s, the same way `stats()` is called now, to avoid GPU syncs.
 
-### Inspect a creature (M)
+### Inspect a creature (M) ✅
 Click one to see its genome as a heatmap, its hidden state `h` updating live, its loop count, age and how far back its family line goes. Add zoom and pan, and a camera that follows the selected creature.
 - Touches: `app.py` mouse handling, `render.py` side panel.
 
