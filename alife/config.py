@@ -26,6 +26,11 @@ FERT_DRIFT = 0.05  # cells per step the fertility map slides in x (0 = static la
 # ---- display ----
 TRAIL_DECAY = 0.9  # per frame brightness kept by creature trails (0 = no trails)
 
+# ---- HUD (key H) ----
+HUD_W = 260  # overlay size in pixels (render only)
+HUD_H = 240
+HUD_HISTORY = 240  # census samples kept (one per 0.5 s)
+
 # ---- disasters (keys M, F, P) ----
 METEOR_R = 60.0  # radius of the meteor crater
 PLAGUE_STEPS = 400  # how long an outbreak keeps spreading

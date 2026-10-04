@@ -30,7 +30,7 @@ Testing notes:
 - `tests/test_cli.py` runs `python -m alife` in a subprocess, because `--set` must run before the sim modules are imported, and pytest has already imported them.
 - Worlds share torch's global RNG. To compare two seeded worlds, run them one after the other, not interleaved.
 
-Runtime keys: S saves a snapshot to `alife-<timestamp>.alife`, SPACE pauses, C cycles the colour mode (lineage / loop count / diet), and UP/DOWN doubles or halves the sim steps per frame (1–64), M drops a meteor at the mouse (`World.meteor`), F floods the map with food (`World.flood`), P starts a plague (`World.plague`). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
+Runtime keys: H toggles the HUD (population, mean loops, diet, loop histogram; sampled from `census()` every 0.5 s), S saves a snapshot to `alife-<timestamp>.alife`, SPACE pauses, C cycles the colour mode (lineage / loop count / diet), and UP/DOWN doubles or halves the sim steps per frame (1–64), M drops a meteor at the mouse (`World.meteor`), F floods the map with food (`World.flood`), P starts a plague (`World.plague`). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
 
 Each CSV row comes from `World.census()`: `t`, `pop`, means of loops/energy/age/food, and `loops_1..loops_K_MAX` histogram counts, plus `mean_diet`, `carnivores` (diet > 0.5) and `meat` (total) when `PREDATION` is on, and `mean_pick` when `SEX` is on. The same seed gives an identical CSV on the same device. `--set NAME=VALUE` overrides any int/float constant in `config.py`, except the derived ones (`N_IN`, `G`, `TAU`). In windowed mode, extinction resets the world, so `t` restarts in the log.
 
@@ -40,7 +40,7 @@ Each CSV row comes from `World.census()`: `t`, `pop`, means of loops/energy/age/
 
 **Constants are copied at import.** `world`, `brain` and `render` use `from .config import X`, so `config.override()` must run before they're imported. It raises if they already have been. That's why `app.main()` imports `World`, `render` and pygame inside the function. Keep `app.py` and `__init__.py` free of top-level imports of the sim modules.
 
-Module flow: `app` (CLI, logging, headless and pygame loops) → `world.World.step()` → `brain.think()`, with `render` turning a `World` into a frame. All tunable constants live in `config.py`.
+Module flow: `app` (CLI, logging, headless and pygame loops) → `world.World.step()` → `brain.think()`, with `render` turning a `World` into a frame and `hud.draw_hud` drawing census history graphs (pure function of the history list; pygame is imported inside `main()` like `render`). All tunable constants live in `config.py`.
 
 **Fixed-size structure-of-arrays state.** Each per-creature attribute (`pos`, `heading`, `energy`, `age`, `genome`, `loops`, `h`, `color`, `diet`, `pick`) is a tensor of length `N_MAX`, and the `alive` bool mask marks which slots are in use. Dead slots still go through every computation; their effects are masked out with `alive_f`. Birth means writing into free (`~alive`) slots, and death just clears `alive`. To add a new per-creature attribute, you must:
 1. allocate it in `World.reset()`

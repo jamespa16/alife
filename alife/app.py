@@ -107,7 +107,8 @@ def run_headless(world, steps, log, save=None, save_every=None):
 def run_window(world, steps, log, save=None, save_every=None):
     import pygame
 
-    from .config import H, W
+    from .config import HUD_HISTORY, H, W
+    from .hud import draw_hud, make_hud
     from .render import render
 
     pygame.init()
@@ -115,6 +116,8 @@ def run_window(world, steps, log, save=None, save_every=None):
     mode, spf, paused = 0, 1, False
     last, n = time.time(), 0
     log.maybe_log(world)
+    show_hud, rows = True, []
+    hud, font = make_hud()
 
     running = True
     while running:
@@ -136,6 +139,8 @@ def run_window(world, steps, log, save=None, save_every=None):
                     world.flood()
                 elif e.key == pygame.K_p:
                     world.plague()
+                elif e.key == pygame.K_h:
+                    show_hud = not show_hud
                 elif e.key == pygame.K_s:
                     name = snapshot_name()
                     world.save(name)
@@ -152,13 +157,20 @@ def run_window(world, steps, log, save=None, save_every=None):
                     break
 
         pygame.surfarray.blit_array(screen, render(world, mode))
+        if show_hud:
+            screen.blit(hud, (0, 0))
         pygame.display.flip()
 
         now = time.time()
         if now - last > 0.5:
-            pop, loops = world.stats()
+            c = world.census()  # one sample per 0.5 s, like stats(): no per-step syncs
+            pop, loops = c["pop"], c["mean_loops"]
             if pop == 0:
                 world.reset()
+                rows.clear()
+            rows.append(c)
+            del rows[:-HUD_HISTORY]
+            draw_hud(hud, rows, font)
             pygame.display.set_caption(
                 f"t={world.t}  pop={pop}  mean loops={loops:.2f}  "
                 f"{n / (now - last):.0f} steps/s  x{spf}  "

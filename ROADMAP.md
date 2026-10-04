@@ -52,7 +52,7 @@ Walls or water cells that block movement and sensing, and poison zones. Mazes re
 Save every tensor to disk, reload it, and fork a run from any point. That makes "what if I add predators to *this* world" experiments possible.
 - Touches: `World.save()` / `World.load()`, CLI flags `--save` / `--load`.
 
-### Live HUD (M)
+### Live HUD (M) ✅
 Graphs of population and the loop-count histogram over time, drawn in the window. The data already comes from `census()`.
 - Touches: `app.py` / `render.py`. Sample every 0.5s, the same way `stats()` is called now, to avoid GPU syncs.
 
