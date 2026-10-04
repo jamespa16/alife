@@ -39,12 +39,16 @@ def draw_hud(surf, rows, font=None):
     """Draw graphs from `rows` (a list of census() dicts, oldest first) onto `surf`.
 
     Panels: population (+ carnivores), mean loop count (+ mean diet, both scaled
-    to their own ranges), and the latest loop-count histogram."""
+    to their own ranges), and the latest loop-count histogram. Padding and label
+    room scale with the surface height, so a bigger surface (make_hud) is just
+    a bigger HUD."""
     surf.fill(BG)
     w, h = surf.get_size()
-    panel_h = (h - 4 * PAD) // 3
+    k = h / HUD_H
+    pad, lab = round(PAD * k), round(8 * k)  # lab: half the label strip
+    panel_h = (h - 4 * pad) // 3
     area = [
-        pygame.Rect(PAD, PAD + i * (panel_h + PAD), w - 2 * PAD, panel_h)
+        pygame.Rect(pad, pad + i * (panel_h + pad), w - 2 * pad, panel_h)
         for i in range(3)
     ]
     for r in area:
@@ -52,7 +56,7 @@ def draw_hud(surf, rows, font=None):
     if not rows:
         return
     last = rows[-1]
-    top = area[0].inflate(-2, -16).move(0, 8)
+    top = area[0].inflate(-2, -2 * lab).move(0, lab)
 
     pop = [r["pop"] for r in rows]
     hi = max(max(pop), 1)
@@ -63,7 +67,7 @@ def draw_hud(surf, rows, font=None):
         text += f"  carn {last['carnivores']}"
     _label(surf, font, text, (area[0].x + 3, area[0].y + 1))
 
-    mid = area[1].inflate(-2, -16).move(0, 8)
+    mid = area[1].inflate(-2, -2 * lab).move(0, lab)
     _line(surf, mid, [r["mean_loops"] for r in rows], K_MAX, BLUE, lo=1.0)
     text = f"loops {last['mean_loops']:.2f}"
     if "mean_diet" in last:
@@ -72,7 +76,7 @@ def draw_hud(surf, rows, font=None):
     _label(surf, font, text, (area[1].x + 3, area[1].y + 1), BLUE)
 
     bars = [last.get(f"loops_{k}", 0) for k in range(1, K_MAX + 1)]
-    box = area[2].inflate(-2, -16).move(0, 8)
+    box = area[2].inflate(-2, -2 * lab).move(0, lab)
     top_bar = max(max(bars), 1)
     bw = box.w / K_MAX
     for k, n in enumerate(bars):
@@ -83,11 +87,13 @@ def draw_hud(surf, rows, font=None):
     _label(surf, font, "loop-count histogram", (area[2].x + 3, area[2].y + 1))
 
 
-def make_hud():
-    """(surface, font) for draw_hud; the font is None if pygame.font is unavailable."""
+def make_hud(scale=1.0):
+    """(surface, font) for draw_hud, `scale` times the HUD_W x HUD_H size; the
+    font is None if pygame.font is unavailable."""
     try:
         pygame.font.init()
-        font = pygame.font.Font(None, 16)
+        font = pygame.font.Font(None, round(16 * scale))
     except (pygame.error, NotImplementedError):
         font = None
-    return pygame.Surface((HUD_W, HUD_H), pygame.SRCALPHA), font
+    size = (round(HUD_W * scale), round(HUD_H * scale))
+    return pygame.Surface(size, pygame.SRCALPHA), font

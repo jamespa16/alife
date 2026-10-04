@@ -7,7 +7,7 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 import pygame
 import pytest
 
-from alife.config import K_MAX
+from alife.config import HUD_H, HUD_W, K_MAX
 from alife.hud import draw_hud, make_hud
 
 
@@ -50,3 +50,11 @@ def test_draw_hud_extinct_and_flat_history():
     draw_hud(surf, flat, font)
     draw_hud(surf, flat, None)  # works without a font too
     pygame.quit()
+
+
+@pytest.mark.parametrize("scale", [0.75, 2.5])
+def test_make_hud_scales(scale):
+    surf, font = make_hud(scale)
+    assert surf.get_size() == (round(HUD_W * scale), round(HUD_H * scale))
+    draw_hud(surf, [row(t, True) for t in range(50)], font)
+    assert painted(surf)

@@ -162,6 +162,8 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
             elif e.type == pygame.VIDEORESIZE:
                 screen = pygame.display.get_surface()
                 view.resize(*screen.get_size())
+                hud, font = make_hud(max(view.scale, 0.75))  # stays readable
+                draw_hud(hud, rows, font)
             elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 if not (
                     insp.data is not None and e.pos[0] >= screen.get_width() - INSPECT_W
