@@ -17,9 +17,16 @@ uv run alife --headless --steps 20000 --seed 1 --log run.csv --set THINK_COST=0
 uv run ruff check      # lint (--fix to autofix)
 uv run ruff format     # format
 uv run ty check        # type-check
+uv run pytest          # all tests (~10s; runs on the GPU device like the sim)
+uv run pytest tests/test_brain.py::test_empty_batch   # a single test
 ```
 
-There's no test suite or CI.
+There's no CI.
+
+Testing notes:
+- `tests/test_brain.py` checks `think()` against a per-creature reference built from the genome layout.
+- `tests/test_cli.py` runs `python -m alife` in a subprocess, because `--set` must run before the sim modules are imported, and pytest has already imported them.
+- Worlds share torch's global RNG. To compare two seeded worlds, run them one after the other, not interleaved.
 
 Runtime keys: SPACE pauses, C switches the colour mode (lineage / loop count), and UP/DOWN doubles or halves the sim steps per frame (1–64). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
 

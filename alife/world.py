@@ -44,6 +44,7 @@ class World:
         noise = torch.rand(1, 1, 8, 8, device=DEV)
         s.fert = F.interpolate(noise, size=(H, W), mode="bicubic")[0, 0].clamp(0.05, 1)
         s.sense_a = torch.tensor(SENSE_ANGLES, device=DEV)
+        s.size = torch.tensor([W, H], device=DEV)
         t = torch.linspace(0, 1, K_MAX + 1, device=DEV)
         s.palette = torch.stack(
             [t, torch.full_like(t, 0.25), 1 - t], 1
@@ -52,7 +53,7 @@ class World:
 
     def reset(s):
         s.food = s.fert.clone()
-        s.pos = torch.rand(N_MAX, 2, device=DEV) * torch.tensor([W, H], device=DEV)
+        s.pos = torch.rand(N_MAX, 2, device=DEV) * s.size
         s.heading = torch.rand(N_MAX, device=DEV) * TAU
         s.energy = torch.ones(N_MAX, device=DEV)
         s.age = torch.zeros(N_MAX, dtype=torch.long, device=DEV)
@@ -122,7 +123,7 @@ class World:
 
         s.energy[parents] *= 0.5
         s.energy[kids] = s.energy[parents]
-        s.pos[kids] = s.pos[parents] + torch.randn(n, 2, device=DEV) * 2
+        s.pos[kids] = (s.pos[parents] + torch.randn(n, 2, device=DEV) * 2) % s.size
         s.heading[kids] = torch.rand(n, device=DEV) * TAU
         s.age[kids] = 0
         s.h[kids] = 0  # newborns start with a blank memory
