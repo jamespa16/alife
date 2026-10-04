@@ -37,7 +37,9 @@ Module flow: `app` (CLI, logging, headless and pygame loops) → `world.World.st
 
 **Genome ↔ brain layout coupling.** The genome is a flat vector of length `G`, defined in `config.py`. `brain.think()` slices it, in order, into `w_in [N_HID×N_IN]`, `w_rec [N_HID×N_HID]`, `bias [N_HID]` and `w_out [N_OUT×N_HID]`. If you change the brain shape, `G` and those slices must stay consistent. `N_IN` must also match the number of sensor columns built in `World.step()` (currently food×3, density×3 and own energy). `N_OUT` must match how `step()` reads the outputs (turn, speed).
 
-**Loop count is a gene.** `loops[i]` (1..`K_MAX`) sets how many recurrent passes creature i's brain gets. Each pass costs `THINK_COST` energy, and the value mutates by ±1 with probability `LOOP_MUT_P`. For batching, `think()` always runs `K_MAX` iterations and uses `torch.where` to freeze `h` once a creature has used up its loops. Compute cost therefore doesn't depend on the loop gene; only the energy cost and the output do.
+**Loop count is a gene.** `loops[i]` (1..`K_MAX`) sets how many recurrent passes creature i's brain gets. Each pass costs `THINK_COST` energy, and the value mutates by ±1 with probability `LOOP_MUT_P`. For batching, `think()` runs up to the largest loop count present and uses `torch.where` to freeze `h` once each creature has used up its loops.
+
+**Performance.** `think()` dominates step time; the batched `bmm` over tiny per-creature matrices is the cost. `World.step()` therefore runs the brain only on living creatures, gathered by index, and dead slots get zero output. Elementwise multiply-sum was tried instead of `bmm`: it's 2× slower on MPS. Each step has a few unavoidable GPU syncs (`nonzero`, `loops.max()`), so don't add more in the hot path. To profile, time sections with `torch.mps.synchronize()` (or the CUDA equivalent) around them. Without the sync, GPU time shows up in whichever op syncs next.
 
 **Brains have memory across steps.** Each creature's hidden state `World.h [N_MAX, N_HID]` persists: `think(genome, loops, x, h)` starts from the previous step's `h` and returns `(out, new_h)`. Newborns start with `h = 0`.
 

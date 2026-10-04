@@ -2,7 +2,7 @@
 
 import torch
 
-from .config import K_MAX, N_HID, N_IN, N_OUT
+from .config import N_HID, N_IN, N_OUT
 
 
 def think(genome, loops, x, h):
@@ -20,7 +20,8 @@ def think(genome, loops, x, h):
     w_out = genome[:, c:].reshape(-1, N_OUT, N_HID)
 
     drive = torch.bmm(w_in, x.unsqueeze(2)).squeeze(2) + bias
-    for i in range(K_MAX):
+    # Stop once every creature is done (one GPU sync; loops rarely reach K_MAX).
+    for i in range(int(loops.max()) if len(loops) else 0):
         h_new = torch.tanh(drive + torch.bmm(w_rec, h.unsqueeze(2)).squeeze(2))
         h = torch.where((loops > i).unsqueeze(1), h_new, h)
     return torch.bmm(w_out, h.unsqueeze(2)).squeeze(2), h

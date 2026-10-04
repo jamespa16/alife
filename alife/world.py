@@ -19,6 +19,7 @@ from .config import (
     N_HID,
     N_INIT,
     N_MAX,
+    N_OUT,
     REPRO_E,
     SENSE_ANGLES,
     SENSE_DIST,
@@ -90,7 +91,11 @@ class World:
         )
 
         # Act.
-        out, s.h = brain.think(s.genome, s.loops, x, s.h)
+        # Only living creatures think: the brain dominates step time, and most
+        # slots are usually empty. Dead slots get zero output (they're inert).
+        idx = s.alive.nonzero().squeeze(1)
+        out = torch.zeros(N_MAX, N_OUT, device=DEV)
+        out[idx], s.h[idx] = brain.think(s.genome[idx], s.loops[idx], x[idx], s.h[idx])
         turn = out[:, 0].tanh() * MAX_TURN
         speed = out[:, 1].sigmoid() * MAX_SPEED
         s.heading = (s.heading + turn) % TAU
