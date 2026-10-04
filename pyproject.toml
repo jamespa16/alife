@@ -1,0 +1,22 @@
+[project]
+name = "alife"
+version = "0.1.0"
+description = "Evolving creature world"
+requires-python = ">=3.10"
+dependencies = ["torch", "pygame", "numpy"]
+
+[project.scripts]
+alife = "alife.app:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["alife"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.10",
+    "ty>=0.0.84",
+]
