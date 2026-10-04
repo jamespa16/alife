@@ -7,6 +7,7 @@ config overrides are applied, because they copy constants at import time.
 import argparse
 import contextlib
 import csv
+import math
 import sys
 import time
 
@@ -86,7 +87,8 @@ class Logger:
 class SpeciesLog:
     """Writes World.take_events() rows (t, event, species, parent_species, size) to a CSV.
 
-    Without a file it still drains the events, so they never pile up."""
+    Without a file it still drains the events, so they never pile up. drain returns
+    them, for the tree of life."""
 
     FIELDS = ("t", "event", "species", "parent_species", "size")
 
@@ -101,6 +103,7 @@ class SpeciesLog:
         if s.file is not None and events:
             s.writer.writerows(events)
             s.file.flush()
+        return events
 
 
 def snapshot_name():
@@ -135,10 +138,21 @@ def run_headless(world, steps, log, save=None, save_every=None, slog=None):
 def run_window(world, steps, log, save=None, save_every=None, slog=None):
     import pygame
 
-    from .config import HUD_HISTORY, INSPECT_W, PICK_RADIUS, SPECIES, H, W
+    from .config import (
+        HUD_HISTORY,
+        INSPECT_W,
+        PICK_RADIUS,
+        RING_FRAMES,
+        SPECIES,
+        TICK_LEN,
+        TICK_ZOOM,
+        H,
+        W,
+    )
     from .hud import draw_hud, make_hud
     from .panel import Inspector, View, draw_panel, make_panel
-    from .render import render
+    from .render import heading_ticks, render
+    from .tree import History, draw_tree, hit_test, make_tree
 
     slog = slog or SpeciesLog()
     pygame.init()
@@ -148,8 +162,13 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
     mode, spf, paused = 0, 1, False
     last, n = time.time(), 0
     log.maybe_log(world)
-    slog.drain(world)
-    show_hud, rows = True, []
+    tree = History()
+    tree.add(slog.drain(world))
+    tree.sync(world)  # a loaded run has species whose birth we never saw
+    show_hud, fx, rows = True, True, []
+    show_tree, tree_surf, tree_font, tree_dirty = False, None, None, True
+    tree_sel = None  # species highlighted on the map, picked in the tree
+    tree_rect = pygame.Rect(0, 0, 0, 0)
     hud, font = make_hud()
     panel, pfont = make_panel()
     view, insp, follow = View(), Inspector(), False
@@ -164,6 +183,15 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
                 view.resize(*screen.get_size())
                 hud, font = make_hud(max(view.scale, 0.75))  # stays readable
                 draw_hud(hud, rows, font)
+            elif (
+                e.type == pygame.MOUSEBUTTONDOWN
+                and e.button == 1
+                and show_tree
+                and tree_rect.collidepoint(e.pos)
+            ):
+                x, y = e.pos[0] - tree_rect.x, e.pos[1] - tree_rect.y
+                tree_sel = hit_test(tree, tree_rect.size, (x, y))
+                tree_dirty = True
             elif e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
                 if not (
                     insp.data is not None and e.pos[0] >= screen.get_width() - INSPECT_W
@@ -200,6 +228,10 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
                     world.plague()
                 elif e.key == pygame.K_h:
                     show_hud = not show_hud
+                elif e.key == pygame.K_b:
+                    fx = not fx
+                elif e.key == pygame.K_t and SPECIES:
+                    show_tree, tree_dirty = not show_tree, True
                 elif e.key == pygame.K_v:
                     follow = not follow
                 elif e.key == pygame.K_0:
@@ -208,6 +240,7 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
                 elif e.key == pygame.K_ESCAPE:
                     insp.clear()
                     follow = False
+                    tree_sel, tree_dirty = None, True
                 elif e.key == pygame.K_s:
                     name = snapshot_name()
                     world.save(name)
@@ -217,7 +250,7 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
             for _ in range(spf):
                 world.step()
                 log.maybe_log(world)
-                slog.drain(world)
+                tree.add(slog.drain(world))
                 maybe_save(world, save, save_every)
                 n += 1
                 if world.t == steps:
@@ -229,7 +262,7 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
         if follow and insp.data is not None:
             view.center_on(*insp.data["pos"])
 
-        pygame.surfarray.blit_array(frame, render(world, mode))
+        pygame.surfarray.blit_array(frame, render(world, mode, fx, tree_sel))
         ox, oy, dw, dh = view.dest()
         if (dw, dh) != screen.get_size():
             screen.fill((0, 0, 0))  # letterbox bars
@@ -238,6 +271,19 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
         else:
             sub = frame.subsurface(view.rect())
             screen.blit(pygame.transform.scale(sub, (dw, dh)), (ox, oy))
+        if fx:
+            if view.zoom >= TICK_ZOOM:  # heading ticks for the creatures in view
+                for x, y, a in heading_ticks(world, view.rect()):
+                    sx, sy = view.to_screen(x, y)
+                    ex, ey = sx + TICK_LEN * math.cos(a), sy + TICK_LEN * math.sin(a)
+                    pygame.draw.line(screen, (255, 255, 255), (sx, sy), (ex, ey))
+            for rx, ry, age, r in world.rings:  # meteor shockwaves
+                sx, sy = view.to_screen(rx, ry)
+                f = age / RING_FRAMES
+                col = tuple(round(255 * (1 - f)) for _ in range(3))
+                rad = max(round(r * (0.3 + 1.2 * f) * view.zoom * view.scale), 1)
+                pygame.draw.circle(screen, col, (round(sx), round(sy)), rad, 2)
+        world.tick_rings()
         if show_hud:
             screen.blit(hud, (0, 0))
         if insp.data is not None:
@@ -246,6 +292,17 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
             pygame.draw.circle(screen, color, (round(sx), round(sy)), 10, 1)
             draw_panel(panel, insp.data, insp.dead, pfont)
             screen.blit(panel, (screen.get_width() - INSPECT_W, 0))
+        if show_tree:  # along the bottom, left of the inspector panel
+            sw, sh = screen.get_size()
+            tw = sw - (INSPECT_W if insp.data is not None else 0)
+            tree_rect = pygame.Rect(0, sh - max(sh // 3, 100), tw, max(sh // 3, 100))
+            if tree_surf is None or tree_surf.get_size() != tree_rect.size:
+                tree_surf, tree_font = make_tree(tree_rect.size)
+                tree_dirty = True
+            if tree_dirty:
+                draw_tree(tree_surf, tree, tree_sel, tree_font)
+                tree_dirty = False
+            screen.blit(tree_surf, tree_rect)
         pygame.display.flip()
 
         now = time.time()
@@ -254,10 +311,14 @@ def run_window(world, steps, log, save=None, save_every=None, slog=None):
             pop, loops = c["pop"], c["mean_loops"]
             if pop == 0:
                 world.reset()
-                slog.drain(world)
+                tree.clear()
+                tree.add(slog.drain(world))
+                tree_sel = None
                 insp.clear()
                 rows.clear()
             rows.append(c)
+            tree.sync(world)
+            tree_dirty = True
             del rows[:-HUD_HISTORY]
             draw_hud(hud, rows, font)
             extra = f"  species={c['n_species']}" if "n_species" in c else ""

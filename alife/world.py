@@ -17,12 +17,18 @@ from .config import (
     BODY_MAX,
     BODY_MIN,
     BODY_MUT_STD,
+    DAY_PERIOD,
+    DAYNIGHT,
     DEV,
     DIET_INIT,
     DIET_MUT_STD,
     EAT_RATE,
     FERT_DRIFT,
     FOOD_GROWTH,
+    GIVE_BIAS,
+    GIVE_COST,
+    GIVE_FLOOR,
+    GIVE_RATE,
     K_MAX,
     LOOP_MUT_P,
     MAX_AGE,
@@ -38,6 +44,8 @@ from .config import (
     N_INIT,
     N_MAX,
     N_OUT,
+    NIGHT_GROWTH,
+    NIGHT_SENSE,
     PHERO_CH,
     PHERO_COST,
     PHERO_DECAY,
@@ -55,6 +63,7 @@ from .config import (
     POISON_FRAC,
     PREDATION,
     REPRO_E,
+    RING_FRAMES,
     SEASON_AMP,
     SEASON_PERIOD,
     SENSE_ANGLES,
@@ -62,6 +71,7 @@ from .config import (
     SENSE_DIST,
     SEX,
     SEX_COST,
+    SHARE,
     SIZE_COST,
     SPECIES,
     SPECIES_DIST,
@@ -86,6 +96,12 @@ def blur(g, r=4):
     flat = g.reshape(-1, 1, *g.shape[-2:])
     out = F.avg_pool2d(F.pad(flat, (r,) * 4, mode="circular"), 2 * r + 1, 1)
     return out.reshape(g.shape)
+
+
+def light_at(t):
+    """Light level in [0, 1] at step t: a sine squashed so days have a flat noon and
+    a flat midnight (clamp(0.5 + 0.75 sin)), roughly 60% light. A function of t only."""
+    return min(max(0.5 + 0.75 * math.sin(TAU * t / DAY_PERIOD), 0.0), 1.0)
 
 
 def _device_module():
@@ -151,8 +167,11 @@ class World:
             H, W, device=DEV
         )  # attack output summed per cell, last step
         s.sick = torch.zeros(N_MAX, dtype=torch.bool, device=DEV)
+        s.gave = torch.zeros(N_MAX, device=DEV)  # energy given away last step
         s.plague_left = 0  # steps of outbreak remaining
         s.trail = None  # render's fading creature layer, allocated on first frame
+        s.atk_vis = None  # last step's attack per creature, for the red flash
+        s.rings = []  # meteor shockwaves [x, y, age in frames], drawn by the window
         s.pos = torch.rand(N_MAX, 2, device=DEV) * s.size
         if TERRAIN:  # don't start inside a wall: redraw those a few times
             for _ in range(4):
@@ -254,6 +273,9 @@ class World:
         dens_s = blur(count.view(H, W))
         ang = s.heading[:, None] + s.sense_a[None]
         reach = SENSE_DIST * s.body[:, 2:3]  # sensing range gene
+        if DAYNIGHT:  # night shortens sight
+            light = light_at(s.t)
+            reach = reach * (1 - NIGHT_SENSE * (1 - light))
         sx = (s.pos[:, 0:1] + reach * ang.cos()).floor().long() % W
         sy = (s.pos[:, 1:2] + reach * ang.sin()).floor().long() % H
         # To add a sensor group: append [N, k] here and bump N_IN in config.
@@ -266,6 +288,8 @@ class World:
             sensors.append(blur(s.aggr)[sy, sx].tanh())
         if TERRAIN:  # wall and poison at each sense point -> [N, 6]
             sensors.append(s.terr_s[:, sy, sx].permute(1, 0, 2).reshape(N_MAX, -1))
+        if DAYNIGHT:  # time of day -> [N, 1]
+            sensors.append(torch.full((N_MAX, 1), light, device=DEV))
         x = torch.cat(sensors, 1)
 
         # Act.
@@ -300,7 +324,7 @@ class World:
         # 1/1024, so the unordered scatter_add_ sums exactly.
         atk = None
         if PREDATION:
-            atk = (out[:, -1] - ATTACK_BIAS).sigmoid() * alive_f
+            atk = (out[:, 2 + PHERO_CH] - ATTACK_BIAS).sigmoid() * alive_f
             # Size is muscle: attack power is strength x size, and a big victim takes
             # proportionally less of it (sizes are all 1 when BODY is off).
             atk = (atk * s.body[:, 0] * 1024).round() / 1024
@@ -311,6 +335,22 @@ class World:
             share = atk / a_cell[cell].clamp(min=1e-6)
             s.energy += stolen[cell] * share * s.diet - loss
             s.aggr = a_cell.view(H, W)
+            s.atk_vis = atk  # render-only: no sync, no RNG
+
+        # Sharing: a giver splits its gift equally among the other creatures in its
+        # cell. Each recipient's share is rounded down to a multiple of 1/1024 and the
+        # giver pays only what is delivered (plus overhead), so energy is conserved
+        # and the unordered scatter_add_ sums exactly. Alone in a cell: no gift, no cost.
+        gift = None
+        if SHARE:
+            others = (count[cell] - 1).clamp(min=0) * alive_f
+            want = (out[:, -1] - GIVE_BIAS).sigmoid() * GIVE_RATE
+            want = want.minimum((s.energy - GIVE_FLOOR).clamp(min=0))
+            per = (want / others.clamp(min=1) * 1024).floor() / 1024 * (others > 0)
+            sent = torch.zeros(H * W, device=DEV).scatter_add_(0, cell, per * alive_f)
+            gift = (sent[cell] - per * alive_f) * (others > 0)  # others' shares, exact
+            s.gave = per * others
+            s.energy += gift - s.gave * (1 + GIVE_COST)
 
         # Pheromones: drop scent where the creature stood when it sensed.
         drop = None
@@ -357,7 +397,10 @@ class World:
         if SPECIES and s.t % SPECIES_EVERY == 0:
             s.update_species()  # rare, so its host syncs are fine
         s.update_fert()
-        s.food = torch.minimum(s.food + FOOD_GROWTH * s.fert, s.fert)
+        growth = FOOD_GROWTH
+        if DAYNIGHT:  # plants grow by day
+            growth *= NIGHT_GROWTH + (1 - NIGHT_GROWTH) * light_at(s.t)
+        s.food = torch.minimum(s.food + growth * s.fert, s.fert)
         if PREDATION:
             s.meat *= MEAT_DECAY
         if PHERO_CH:  # scent spreads, then fades
@@ -365,7 +408,7 @@ class World:
             s.phero = mixed * PHERO_DECAY
 
     # Attributes that are render-only state, never saved.
-    TRANSIENT = ("trail",)
+    TRANSIENT = ("trail", "atk_vis", "rings")
 
     @torch.no_grad()
     def save(s, path):
@@ -420,6 +463,8 @@ class World:
         for k, v in data["state"].items():
             setattr(s, k, v.to(DEV) if isinstance(v, torch.Tensor) else v)
         s.trail = None
+        s.atk_vis = None
+        s.rings = []
         s.events = []
         torch.set_rng_state(data["rng"]["cpu"])
         mod = _device_module()
@@ -549,6 +594,7 @@ class World:
         s.next_uid += n
         s.gen[kids] = torch.maximum(s.gen[a], s.gen[b]) + 1
         s.species[kids] = s.species[a]
+        s.gave[kids] = 0
 
     def _nearest(s, g, reps):
         """(RMS distance, index) of the closest row of reps for each row of g."""
@@ -649,6 +695,13 @@ class World:
         dy = (gy - c[1] + H / 2) % H - H / 2
         dx = (gx - c[0] + W / 2) % W - W / 2
         s.food[dx**2 + dy**2 <= r * r] = 0
+        s.rings.append([*c.tolist(), 0, r])  # render-only shockwave
+
+    def tick_rings(s):
+        """Age the shockwaves by one frame and drop the expired ones (render only)."""
+        for ring in s.rings:
+            ring[2] += 1
+        s.rings = [r for r in s.rings if r[2] < RING_FRAMES]
 
     def flood(s):
         """Refill all food to the current fertility."""
@@ -689,7 +742,11 @@ class World:
         if BODY:
             for i, name in enumerate(("size", "speed", "sense")):
                 row[f"mean_{name}"] = float(s.body[a, i].mean().nan_to_num())
+        if SHARE:
+            row["mean_give"] = float(s.gave[a].mean().nan_to_num())
         if SPECIES:
             row["n_species"] = int(torch.unique(s.species[a]).numel())
+        if DAYNIGHT:
+            row["light"] = light_at(s.t)
         row.update({f"loops_{k}": n for k, n in enumerate(hist.tolist(), 1)})
         return row

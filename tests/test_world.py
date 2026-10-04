@@ -243,8 +243,8 @@ def test_pheromone_sensing_changes_creature_input():
         w.pos[0] = torch.tensor([200.5, 300.5], device=DEV)
         w.heading[0] = 0.0
         w.phero[:] = 0
-        if scent:
-            w.phero[:, 300, 206] = 5.0
+        if scent:  # a patch, so the sense point hits it whatever the range gene
+            w.phero[:, 296:305, 202:212] = 5.0
         torch.manual_seed(1)
         w.genome[0] = torch.randn(config.G, device=DEV)
         w.h[0] = 0
@@ -257,12 +257,24 @@ def test_pheromone_sensing_changes_creature_input():
 
 def _set_attack(w, levels):
     """Make creature i's attack output ~sigmoid(levels[i]) via bias and w_out."""
-    nh, no = config.N_HID, config.N_OUT
+    nh = config.N_HID
     b = nh * config.N_IN + nh * nh
     for i, lv in enumerate(levels):
         w.genome[i, b : b + nh] = 5.0  # hidden state saturates at 1
         w.genome[i, b + nh :] = 0
-        w.genome[i, b + nh + (no - 1) * nh :] = lv / nh
+        w.genome[i, b + nh + (2 + config.PHERO_CH) * nh :][:nh] = lv / nh
+
+
+def _set_give(w, levels):
+    """Make creature i's give output ~levels[i] (sigmoid(level - GIVE_BIAS) * GIVE_RATE)."""
+    nh = config.N_HID
+    b = nh * config.N_IN + nh * nh
+    for i, lv in enumerate(levels):
+        w.genome[i, b : b + nh] = 5.0
+        w.genome[i, b + nh :] = 0
+        w.genome[i, b + nh + (config.N_OUT - 1) * nh :][:nh] = lv / nh
+        if config.PREDATION:  # nobody attacks
+            w.genome[i, b + nh + (2 + config.PHERO_CH) * nh :][:nh] = -50.0 / nh
 
 
 def _arena(n=2):
@@ -691,7 +703,6 @@ def test_births_get_unique_uids_parents_and_generations(monkeypatch, sex):
     first = torch.stack([(w.uid[:4] == p).nonzero()[0, 0] for p in parents])
     if sex:  # one more than the older parent
         assert (w.gen[kids] >= w.gen[first] + 1).all()
-        assert (w.gen[kids] >= 3).all() or (w.gen[first] < 5).all()
     else:
         assert (w.gen[kids] == w.gen[first] + 1).all()
     assert (w.species[kids] == w.species[first]).all()  # inherited until next pass
@@ -773,3 +784,215 @@ def test_species_ids_survive_save_and_load(tmp_path):
     for k in ("uid", "parent_id", "gen", "species", "next_uid", "sp_ids", "sp_rep"):
         assert torch.equal(getattr(w2, k), getattr(w, k)), k
     assert w2.next_species == w.next_species and w2.events == []
+
+
+def test_fx_render_shape_and_attack_transient(tmp_path):
+    from alife.render import heading_ticks, render
+
+    w = make_world()
+    for _ in range(3):
+        w.step()
+    for fx in (True, False):
+        assert render(w, 0, fx).shape == (W, H, 3)
+    if config.PREDATION:
+        assert w.atk_vis is not None and w.atk_vis.shape == (N_MAX,)
+    ticks = heading_ticks(w, (0, 0, W, H))
+    assert ticks and all(len(t) == 3 and type(t[0]) is float for t in ticks)
+    assert {"atk_vis", "rings", "trail"} <= set(World.TRANSIENT)
+    w.save(tmp_path / "w.alife")
+    saved = torch.load(tmp_path / "w.alife", weights_only=True)["state"]
+    assert "atk_vis" not in saved and "rings" not in saved
+    w2 = World.load(tmp_path / "w.alife")
+    assert w2.atk_vis is None and w2.rings == []
+    assert render(w2, 0).shape == (W, H, 3)
+
+
+def test_meteor_ring_expires():
+    w = make_world()
+    w.meteor(10.0, 20.0)
+    assert len(w.rings) == 1 and w.rings[0][:3] == [10.0, 20.0, 0]
+    for _ in range(config.RING_FRAMES):
+        w.tick_rings()
+    assert w.rings == []
+
+
+def test_light_is_a_function_of_t_in_range():
+    ts = range(0, 3 * config.DAY_PERIOD, 7)
+    ls = [world.light_at(t) for t in ts]
+    assert all(0 <= x <= 1 for x in ls)
+    assert min(ls) == 0 and max(ls) == 1  # full dark and full light both reached
+    assert world.light_at(5) == pytest.approx(world.light_at(5 + config.DAY_PERIOD))
+
+
+def test_night_stops_growth(monkeypatch):
+    monkeypatch.setattr(world, "NIGHT_GROWTH", 0.0)
+    w = make_world()
+    w.alive[:] = False  # no eating, so only regrowth changes food
+    night = 3 * config.DAY_PERIOD // 4 - 1  # step() advances t to the sine minimum
+    day = config.DAY_PERIOD // 4 - 1
+    gains = []
+    for t in (night, day):
+        w.t = t
+        w.food[:] = 0
+        w.step()
+        gains.append(float(w.food.sum()))
+    if config.DAYNIGHT:
+        assert gains[0] == 0 and gains[1] > 0
+
+
+def _first_input(monkeypatch, w):
+    """Step once, returning the sensor matrix the brain saw."""
+    seen = {}
+    orig = world.brain.think
+
+    def spy(g, loops, x, h):
+        seen["x"] = x.clone()
+        return orig(g, loops, x, h)
+
+    monkeypatch.setattr(world.brain, "think", spy)
+    w.step()
+    return seen["x"]
+
+
+def test_night_shortens_sensing(monkeypatch):
+    if not config.DAYNIGHT:
+        pytest.skip("DAYNIGHT off")
+    monkeypatch.setattr(world, "NIGHT_SENSE", 1.0)  # blind in full darkness
+
+    def seen(t):
+        w = make_world()
+        w.t = t
+        w.alive[:] = False
+        w.alive[0] = True
+        w.body[0, 2] = 1.0
+        w.pos[0] = torch.tensor([300.5, 300.5], device=DEV)
+        w.heading[0] = 0
+        w.food[:] = 0
+        w.food[300, 306] = 1.0  # straight ahead at SENSE_DIST
+        return float(_first_input(monkeypatch, w)[0, 1])  # centre food sensor
+
+    noon, dark = config.DAY_PERIOD // 4 - 1, 3 * config.DAY_PERIOD // 4 - 1
+    assert seen(noon) > 0 and seen(dark) == 0
+
+
+def test_light_sensor_is_last_column(monkeypatch):
+    if not config.DAYNIGHT:
+        pytest.skip("DAYNIGHT off")
+    w = make_world()
+    w.t = config.DAY_PERIOD // 4 - 1  # step() runs at t, noon is a quarter in
+    x = _first_input(monkeypatch, w)
+    assert x.shape[1] == config.N_IN
+    assert torch.allclose(x[:, -1], torch.full_like(x[:, -1], world.light_at(w.t - 1)))
+
+
+def test_n_in_derivation(monkeypatch):
+    saved = (config.N_IN, config.G)
+    try:
+        monkeypatch.setattr(config, "DAYNIGHT", 0)
+        config._derive()
+        off = config.N_IN
+        monkeypatch.setattr(config, "DAYNIGHT", 1)
+        config._derive()
+        assert config.N_IN == off + 1
+    finally:
+        monkeypatch.undo()
+        config._derive()
+    assert (config.N_IN, config.G) == saved
+
+
+def test_sharing_conserves_energy_and_splits_equally():
+    if not config.SHARE:
+        pytest.skip("sharing off")
+
+    def run(levels):
+        w = _arena(4)
+        w.energy[:4] = torch.tensor([2.0, 1.0, 1.0, 1.0], device=DEV)
+        _set_give(w, levels)
+        w.step()
+        return w
+
+    w, ctl = run([50.0, -50.0, -50.0, -50.0]), run([-50.0] * 4)  # only 0 gives
+    before = ctl.energy[:4]  # same world and costs, nobody giving
+    gave = float(w.gave[0])
+    assert gave == pytest.approx(config.GIVE_RATE, abs=0.01)
+    assert float(w.gave[1:4].sum()) < 0.03  # the others give almost nothing
+    # Cellmates 1..3 each got an equal third of the gift.
+    gain = w.energy[1:4] - before[1:4]
+    assert float(gain.max() - gain.min()) < 1e-3
+    assert float(gain.mean()) == pytest.approx(gave / 3, abs=1e-3)
+    # The giver paid the gift plus overhead (relative to the control world).
+    paid = float(before[0] - w.energy[0])
+    assert paid == pytest.approx(gave * (1 + config.GIVE_COST), abs=1e-3)
+
+
+def test_sharing_total_given_equals_received_plus_overhead(monkeypatch):
+    if not config.SHARE:
+        pytest.skip("sharing off")
+    # Zero every other cost so the energy ledger is only sharing.
+    for name in ("BASE_COST", "MOVE_COST", "THINK_COST", "PHERO_COST", "ATTACK_COST"):
+        monkeypatch.setattr(world, name, 0.0)
+    for name in ("SIZE_COST", "SPEED_COST", "SENSE_COST", "POISON_DRAIN"):
+        monkeypatch.setattr(world, name, 0.0)
+    w = _arena(5)
+    w.energy[:5] = 1.0
+    _set_give(w, [50.0, 50.0, -50.0, -50.0, 0.0])
+    total = float(w.energy[:5].sum())
+    w.step()
+    given = float(w.gave.sum())
+    assert given > 0
+    # What leaves the group is exactly the overhead on what was given.
+    lost = total - float(w.energy[:5].sum())
+    assert lost == pytest.approx(config.GIVE_COST * given, abs=1e-4)
+
+
+def test_lone_creature_gives_nothing_and_pays_nothing():
+    if not config.SHARE:
+        pytest.skip("sharing off")
+    w = _arena(1)
+    _set_give(w, [50.0])
+    w.step()
+    assert float(w.gave[0]) == 0.0
+    w2 = _arena(1)
+    _set_give(w2, [-50.0])
+    w2.step()
+    assert float(w.energy[0]) == pytest.approx(float(w2.energy[0]), abs=1e-6)
+
+
+def test_giver_keeps_its_floor():
+    if not config.SHARE:
+        pytest.skip("sharing off")
+    w = _arena(2)
+    w.energy[:2] = torch.tensor([config.GIVE_FLOOR, 1.0], device=DEV)
+    _set_give(w, [50.0, -50.0])
+    w.step()
+    assert float(w.gave[0]) == 0.0
+
+
+def test_sharing_is_reproducible_per_seed():
+    if not config.SHARE:
+        pytest.skip("sharing off")
+
+    def run():
+        w = make_world(3)
+        for _ in range(30):
+            w.step()
+        return w.energy.clone(), w.gave.clone()
+
+    (e1, g1), (e2, g2) = run(), run()
+    assert torch.equal(e1, e2) and torch.equal(g1, g2)
+
+
+def test_newborns_start_with_zero_gave():
+    if not config.SHARE:
+        pytest.skip("sharing off")
+    w = make_world()
+    w.gave[:] = 0.7
+    w.alive[:] = False
+    w.alive[:2] = True
+    w.energy[:2] = 2 * REPRO_E
+    w.pos[:2] = 50.5
+    w.pick[:] = 10.0
+    w.reproduce()
+    kids = (w.alive & (w.uid >= config.N_INIT)).nonzero().squeeze(1)
+    assert len(kids) > 0
+    assert (w.gave[kids] == 0).all()

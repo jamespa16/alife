@@ -160,3 +160,34 @@ def test_species_off_has_no_column_and_still_reproducible(tmp_path):
         assert r.returncode == 0, r.stderr
         outs.append(log.read_text())
     assert outs[0] == outs[1] and "n_species" not in outs[0]
+
+
+def test_daynight_off_has_no_light_column(tmp_path):
+    cols = {}
+    for d in (0, 1):
+        log = tmp_path / f"d{d}.csv"
+        r = alife("--headless", "--steps", "10", "--seed", "1", "--log", str(log),
+                  "--log-every", "10", "--set", f"DAYNIGHT={d}", *SMALL)  # fmt: skip
+        assert r.returncode == 0, r.stderr
+        cols[d] = next(iter(csv.DictReader(log.open()))).keys()
+    assert "light" not in cols[0] and "light" in cols[1]
+    assert [c for c in cols[1] if c != "light"] == list(cols[0])
+
+
+@pytest.mark.parametrize("on", [0, 1])
+def test_share_toggle_sets_columns_and_n_out(tmp_path, on):
+    log = tmp_path / "run.csv"
+    r = alife("--headless", "--steps", "10", "--seed", "1", "--log", str(log),
+              "--log-every", "10", "--set", f"SHARE={on}", *SMALL)  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    row = list(csv.DictReader(log.open()))[-1]
+    assert ("mean_give" in row) == bool(on)
+    code = (
+        f"from alife import config; config.override({{'SHARE': '{on}'}}); "
+        "print(config.N_OUT - 2 - config.PHERO_CH - config.PREDATION)"
+    )
+    r = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str(on)

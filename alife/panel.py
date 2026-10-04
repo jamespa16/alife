@@ -17,6 +17,7 @@ from .config import (
     PICK_RADIUS,
     PREDATION,
     SEX,
+    SHARE,
     SPECIES,
     ZOOM_MAX,
     G,
@@ -120,7 +121,7 @@ def fetch(world, i):
     w = world
     f = torch.cat(
         [w.genome[i], w.h[i], w.energy[i : i + 1], w.diet[i : i + 1], w.body[i]]
-        + [w.pick[i : i + 1], w.pos[i]]
+        + [w.pick[i : i + 1], w.pos[i], w.gave[i : i + 1]]
     )
     f = f.cpu().numpy()
     uid, pid, gen, sp, age, loops, alive = torch.stack(
@@ -136,6 +137,7 @@ def fetch(world, i):
         "body": f[G + N_HID + 2 : G + N_HID + 5],
         "pick": float(f[G + N_HID + 5]),
         "pos": (float(f[G + N_HID + 6]), float(f[G + N_HID + 7])),
+        "gave": float(f[G + N_HID + 8]),
         "uid": uid,
         "parent_id": pid,
         "gen": gen,
@@ -252,6 +254,8 @@ def draw_panel(surf, data, dead=False, font=None):
         lines.append(f"size {sz:.2f}  speed {sp:.2f}  sense {se:.2f}")
     if SEX:
         lines.append(f"mate pick {data['pick']:.2f}")
+    if SHARE:
+        lines.append(f"gave {data['gave']:.3f} energy last step")
     for text in lines:
         y = _label(surf, font, text, (PAD, y))
 

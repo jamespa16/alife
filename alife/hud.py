@@ -73,6 +73,8 @@ def draw_hud(surf, rows, font=None):
     if "mean_diet" in last:
         _line(surf, mid, [r["mean_diet"] for r in rows], 1.0, RED)
         text += f"  diet {last['mean_diet']:.2f}"
+    if "mean_give" in last:
+        text += f"  give {last['mean_give']:.3f}"
     _label(surf, font, text, (area[1].x + 3, area[1].y + 1), BLUE)
 
     bars = [last.get(f"loops_{k}", 0) for k in range(1, K_MAX + 1)]

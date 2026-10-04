@@ -23,8 +23,23 @@ SEASON_PERIOD = 2000  # steps per seasonal cycle
 SEASON_AMP = 0.4  # fertility swings by +-this fraction (0 = no seasons)
 FERT_DRIFT = 0.05  # cells per step the fertility map slides in x (0 = static land)
 
+# ---- day/night ----
+DAYNIGHT = 1  # plants grow by day, sight shrinks at night, light sensor (0 = off)
+DAY_PERIOD = 600  # steps per day
+NIGHT_GROWTH = 0.1  # fraction of normal food regrowth left in full darkness
+NIGHT_SENSE = 0.5  # sensing reach is cut by this fraction in full darkness
+
 # ---- display ----
 TRAIL_DECAY = 0.9  # per frame brightness kept by creature trails (0 = no trails)
+
+# ---- effects (key B; render only) ----
+BLOOM = 0.8  # strength of the soft glow around creatures (0 = off)
+BLOOM_RADIUS = 3  # box-blur radius in cells; a second, wider blur adds 3x this
+FLASH_MIN = 0.3  # attack output above this flashes the attacker red
+TICK_ZOOM = 4.0  # zoom at which heading ticks appear
+TICK_LEN = 7  # tick length in screen pixels
+TICK_MAX = 4000  # most ticks drawn per frame
+RING_FRAMES = 40  # frames a meteor shockwave takes to expand and fade
 
 # ---- HUD (key H) ----
 HUD_W = 260  # overlay size in pixels (render only)
@@ -73,6 +88,13 @@ MEAT_EAT_RATE = 0.4  # max meat a pure carnivore eats per step
 DIET_MUT_STD = 0.05  # diet gene mutation per birth
 DIET_INIT = 1.0  # initial diet = rand ** DIET_INIT (higher = more herbivores)
 
+# ---- food sharing ----
+SHARE = 1  # give output: pass energy to the other creatures in the cell (0 = off)
+GIVE_BIAS = 3.0  # give = sigmoid(output - this): newborn brains rarely give
+GIVE_RATE = 0.2  # max energy a creature gives away per step
+GIVE_FLOOR = 0.5  # a giver never gives itself below this energy
+GIVE_COST = 0.05  # extra energy lost per unit given (the gift itself arrives whole)
+
 # ---- sexual reproduction ----
 SEX = 1  # 1 = two parents in the same cell, genes mixed; 0 = a lone parent splits
 SEX_COST = 0.4  # fraction of its energy each parent pays; the child gets both payments
@@ -104,6 +126,9 @@ SPECIES_EVERY = 500  # steps between clustering passes
 SPECIES_DIST = 0.55  # RMS per-gene genome distance within a species (random: ~0.7)
 SPECIES_NEW_MAX = 64  # at most this many new species per pass (rest join the nearest)
 
+# ---- tree of life (key T) ----
+TREE_SPAN = 20000  # steps of history shown (older twigs scroll off)
+
 # ---- inspector (windowed only) ----
 INSPECT_W = 280  # side panel width in pixels
 ZOOM_MAX = 16  # mouse wheel zoom limit
@@ -128,8 +153,11 @@ def _derive():
     N_IN = 2 * len(SENSE_ANGLES) + 1 + len(SENSE_ANGLES) * (PHERO_CH + 2 * PREDATION)
     # then, if TERRAIN, wall x3 and poison x3
     N_IN += 2 * len(SENSE_ANGLES) * TERRAIN
-    # turn, speed, one deposit per pheromone channel, then attack if PREDATION
-    N_OUT = 2 + PHERO_CH + PREDATION
+    # then, if DAYNIGHT, the light level
+    N_IN += DAYNIGHT
+    # turn, speed, one deposit per pheromone channel, then attack if PREDATION,
+    # then give if SHARE
+    N_OUT = 2 + PHERO_CH + PREDATION + SHARE
     G = N_HID * N_IN + N_HID * N_HID + N_HID + N_OUT * N_HID  # genome length
 
 
