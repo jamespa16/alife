@@ -607,3 +607,55 @@ def test_terrain_sensors_see_walls_and_poison():
         return w.h[0].clone()
 
     assert not torch.allclose(run(True), run(False))
+
+
+def run_state(w, n):
+    for _ in range(n):
+        w.step()
+    return {k: v.clone() for k, v in vars(w).items() if isinstance(v, torch.Tensor)}
+
+
+def test_save_load_continues_identically(tmp_path):
+    w = make_world(5)
+    run_state(w, 15)
+    w.plague()  # plague state (plague_left, sick) must survive too
+    w.trail = torch.ones(H, W, 3, device=DEV)  # render-only: not saved
+    path = tmp_path / "w.alife"
+    w.save(path)
+    want = run_state(w, 10)  # the uninterrupted run
+    census = w.census()
+
+    w2 = World.load(path)
+    assert w2.t == 15 and w2.plague_left > 0 and w2.trail is None
+    got = run_state(w2, 10)
+    assert w2.census() == census
+    want.pop("trail")  # render-only, not saved
+    assert got.keys() == want.keys()
+    for k in want:
+        assert torch.equal(got[k], want[k]), k
+
+
+def test_save_covers_every_tensor_attribute(tmp_path):
+    w = make_world(1)
+    w.extra = torch.arange(3, device=DEV)  # a future attribute: saved automatically
+    w.save(tmp_path / "w.alife")
+    w2 = World.load(tmp_path / "w.alife")
+    saved = {k for k, v in vars(w).items() if isinstance(v, torch.Tensor)} - {"trail"}
+    assert saved <= set(vars(w2))
+    assert torch.equal(w2.extra, w.extra)
+
+
+def test_load_rejects_shape_mismatch(tmp_path, monkeypatch):
+    w = make_world(1)
+    w.save(tmp_path / "w.alife")
+    monkeypatch.setattr(config, "N_HID", N_HID + 1)
+    with pytest.raises(ValueError, match="N_HID"):
+        World.load(tmp_path / "w.alife")
+
+
+def test_load_warns_on_other_config_change(tmp_path, monkeypatch):
+    w = make_world(1)
+    w.save(tmp_path / "w.alife")
+    monkeypatch.setattr(config, "THINK_COST", 0.5)
+    with pytest.warns(UserWarning, match="THINK_COST"):
+        World.load(tmp_path / "w.alife")

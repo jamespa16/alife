@@ -144,3 +144,16 @@ def override(settings):
             raise ValueError(f"{name}={text!r}: expected {kind.__name__}")
         g[name] = kind(value)
     _derive()
+
+
+# Constants whose change makes a saved world's tensors the wrong shape.
+SHAPE_KEYS = {"N_IN", "N_OUT", "G", "N_MAX", "N_HID", "K_MAX", "W", "H", "PHERO_CH"}
+
+
+def snapshot():
+    """Every numeric constant (derived ones too) as {name: value}, for save files."""
+    return {
+        k: v
+        for k, v in globals().items()
+        if k.isupper() and isinstance(v, (int, float)) and not isinstance(v, bool)
+    }

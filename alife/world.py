@@ -1,11 +1,12 @@
 """Simulation state and the eat / sense / act / reproduce step."""
 
 import math
+import warnings
 
 import torch
 import torch.nn.functional as F
 
-from . import brain
+from . import brain, config
 from .config import (
     ATTACK_BIAS,
     ATTACK_COST,
@@ -81,6 +82,12 @@ def blur(g, r=4):
     flat = g.reshape(-1, 1, *g.shape[-2:])
     out = F.avg_pool2d(F.pad(flat, (r,) * 4, mode="circular"), 2 * r + 1, 1)
     return out.reshape(g.shape)
+
+
+def _device_module():
+    """torch.cuda / torch.mps when the sim runs there (they own a separate RNG), else None."""
+    mod = {"cuda": torch.cuda, "mps": torch.mps}.get(DEV)
+    return mod if mod is not None and hasattr(mod, "get_rng_state") else None
 
 
 class World:
@@ -333,6 +340,68 @@ class World:
         if PHERO_CH:  # scent spreads, then fades
             mixed = s.phero + PHERO_DIFFUSE * (blur(s.phero, PHERO_RADIUS) - s.phero)
             s.phero = mixed * PHERO_DECAY
+
+    # Attributes that are render-only state, never saved.
+    TRANSIENT = ("trail",)
+
+    @torch.no_grad()
+    def save(s, path):
+        """Write the whole world to `path`: every tensor and number in vars(s),
+        the config used, and the torch RNG state, so a loaded run continues
+        exactly like the uninterrupted one. Generic on purpose: a new attribute
+        is saved automatically (tensors, bools, ints, floats only)."""
+        state = {
+            k: v.cpu() if isinstance(v, torch.Tensor) else v
+            for k, v in vars(s).items()
+            if k not in s.TRANSIENT and isinstance(v, (torch.Tensor, bool, int, float))
+        }
+        rng = {"cpu": torch.get_rng_state()}
+        mod = _device_module()
+        if mod is not None:
+            rng["dev"] = mod.get_rng_state()
+        torch.save(
+            {
+                "version": 1,
+                "state": state,
+                "config": config.snapshot(),
+                "rng": rng,
+            },
+            path,
+        )
+
+    @classmethod
+    def load(cls, path):
+        """Rebuild a World from `path` (see save) and restore the RNG state.
+
+        Raises ValueError if the shape constants differ from the saved run; other
+        changed constants only produce a warning, so you can fork a run with
+        different rules (e.g. a higher THINK_COST)."""
+        data = torch.load(path, map_location="cpu", weights_only=True)
+        saved = data["config"]
+        now = config.snapshot()
+        bad = [
+            f"{k}: file {saved[k]}, now {now[k]}"
+            for k in sorted(config.SHAPE_KEYS)
+            if k in saved and saved[k] != now[k]
+        ]
+        if bad:
+            raise ValueError(f"{path} does not fit this config ({'; '.join(bad)})")
+        changed = [
+            f"{k}: {saved[k]} -> {v}" for k, v in now.items() if saved.get(k, v) != v
+        ]
+        if changed:
+            warnings.warn(
+                f"config differs from the saved run: {', '.join(changed)}", stacklevel=2
+            )
+        s = cls.__new__(cls)  # skip __init__: it would draw RNG and build a fresh map
+        for k, v in data["state"].items():
+            setattr(s, k, v.to(DEV) if isinstance(v, torch.Tensor) else v)
+        s.trail = None
+        torch.set_rng_state(data["rng"]["cpu"])
+        mod = _device_module()
+        if mod is not None and "dev" in data["rng"]:
+            mod.set_rng_state(data["rng"]["dev"])
+        return s
 
     def pair_up(s, elig, k):
         """Pick up to k mating pairs among the creatures `elig` (slot indices).

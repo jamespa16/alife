@@ -14,6 +14,8 @@ uv run alife           # run the sim (entry point: alife.app:main)
 python -m alife        # same thing, without uv
 uv run alife --headless --steps 20000 --seed 1 --log run.csv --set THINK_COST=0
                        # experiment run: no window, seeded, CSV every --log-every (100) steps
+uv run alife --headless --steps 5000 --save w.alife   # then: --load w.alife --steps 10000 --set THINK_COST=0.004
+                       # fork a run; --steps is the absolute t, --save-every N also saves along the way
 uv run ruff check      # lint (--fix to autofix)
 uv run ruff format     # format
 uv run ty check        # type-check
@@ -28,11 +30,13 @@ Testing notes:
 - `tests/test_cli.py` runs `python -m alife` in a subprocess, because `--set` must run before the sim modules are imported, and pytest has already imported them.
 - Worlds share torch's global RNG. To compare two seeded worlds, run them one after the other, not interleaved.
 
-Runtime keys: SPACE pauses, C cycles the colour mode (lineage / loop count / diet), and UP/DOWN doubles or halves the sim steps per frame (1–64), M drops a meteor at the mouse (`World.meteor`), F floods the map with food (`World.flood`), P starts a plague (`World.plague`). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
+Runtime keys: S saves a snapshot to `alife-<timestamp>.alife`, SPACE pauses, C cycles the colour mode (lineage / loop count / diet), and UP/DOWN doubles or halves the sim steps per frame (1–64), M drops a meteor at the mouse (`World.meteor`), F floods the map with food (`World.flood`), P starts a plague (`World.plague`). The window title shows t, population, mean loop count and steps/s. The world resets automatically when the population hits zero.
 
 Each CSV row comes from `World.census()`: `t`, `pop`, means of loops/energy/age/food, and `loops_1..loops_K_MAX` histogram counts, plus `mean_diet`, `carnivores` (diet > 0.5) and `meat` (total) when `PREDATION` is on, and `mean_pick` when `SEX` is on. The same seed gives an identical CSV on the same device. `--set NAME=VALUE` overrides any int/float constant in `config.py`, except the derived ones (`N_IN`, `G`, `TAU`). In windowed mode, extinction resets the world, so `t` restarts in the log.
 
 ## Architecture
+
+**Save files.** `World.save(path)` / `World.load(path)` store every tensor, bool, int and float in `vars(s)` (except `World.TRANSIENT`, i.e. the render `trail`), the config snapshot, and the torch CPU and device (CUDA/MPS) RNG states, so a loaded run continues bit-identically on the same device. It is generic: a new tensor attribute is saved automatically, but a new non-numeric attribute (list, dict) is not, so keep state in tensors or numbers, and add render-only state to `TRANSIENT`. `load` raises if the shape constants (`config.SHAPE_KEYS`) differ and warns on any other changed constant, so `--load` plus `--set` forks a run under new rules. `*.alife` is gitignored.
 
 **Constants are copied at import.** `world`, `brain` and `render` use `from .config import X`, so `config.override()` must run before they're imported. It raises if they already have been. That's why `app.main()` imports `World`, `render` and pygame inside the function. Keep `app.py` and `__init__.py` free of top-level imports of the sim modules.
 

@@ -27,6 +27,15 @@ def parse_args(argv):
         "--log-every", type=int, default=100, metavar="K", help="log every K steps"
     )
     p.add_argument(
+        "--save", metavar="PATH", help="save the world here when the run ends"
+    )
+    p.add_argument(
+        "--save-every", type=int, metavar="N", help="also save to --save every N steps"
+    )
+    p.add_argument(
+        "--load", metavar="PATH", help="start from a saved world, not a new one"
+    )
+    p.add_argument(
         "--set",
         action="append",
         default=[],
@@ -38,6 +47,8 @@ def parse_args(argv):
         p.error("--headless needs --steps")
     if args.log_every < 1:
         p.error("--log-every must be at least 1")
+    if args.save_every is not None and (args.save is None or args.save_every < 1):
+        p.error("--save-every needs --save and a value of at least 1")
     for s in args.set:
         if "=" not in s:
             p.error(f"--set {s}: expected NAME=VALUE")
@@ -67,12 +78,22 @@ class Logger:
         s.file.flush()  # a killed run still leaves usable data
 
 
-def run_headless(world, steps, log):
+def snapshot_name():
+    return time.strftime("alife-%Y%m%d-%H%M%S.alife")
+
+
+def maybe_save(world, path, every):
+    if path and every and world.t % every == 0:
+        world.save(path)
+
+
+def run_headless(world, steps, log, save=None, save_every=None):
     log.maybe_log(world)
     last = time.time()
     while world.t < steps:
         world.step()
         log.maybe_log(world)
+        maybe_save(world, save, save_every)
         now = time.time()
         if now - last > 5 or world.t == steps:
             pop, loops = world.stats()
@@ -83,7 +104,7 @@ def run_headless(world, steps, log):
             last = now
 
 
-def run_window(world, steps, log):
+def run_window(world, steps, log, save=None, save_every=None):
     import pygame
 
     from .config import H, W
@@ -115,11 +136,16 @@ def run_window(world, steps, log):
                     world.flood()
                 elif e.key == pygame.K_p:
                     world.plague()
+                elif e.key == pygame.K_s:
+                    name = snapshot_name()
+                    world.save(name)
+                    print(f"saved {name}", file=sys.stderr)
 
         if not paused:
             for _ in range(spf):
                 world.step()
                 log.maybe_log(world)
+                maybe_save(world, save, save_every)
                 n += 1
                 if world.t == steps:
                     running = False
@@ -150,14 +176,16 @@ def main(argv=None):
 
     from .world import World
 
-    world = World()
+    world = World.load(args.load) if args.load else World()
     with contextlib.ExitStack() as stack:
         f = stack.enter_context(open(args.log, "w", newline="")) if args.log else None
         log = Logger(f, args.log_every)
         try:
             if args.headless:
-                run_headless(world, args.steps, log)
+                run_headless(world, args.steps, log, args.save, args.save_every)
             else:
-                run_window(world, args.steps, log)
+                run_window(world, args.steps, log, args.save, args.save_every)
         except KeyboardInterrupt:
             pass
+        if args.save:
+            world.save(args.save)

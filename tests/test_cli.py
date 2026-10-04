@@ -97,3 +97,44 @@ def test_body_and_terrain_toggles_run(tmp_path, on):
     assert r.returncode == 0, r.stderr
     row = list(csv.DictReader(log.open()))[-1]
     assert ("mean_size" in row) == bool(on)
+
+
+def test_save_and_load_round_trip(tmp_path):
+    # Seeded run to t=20 saving at the end; a resumed run to t=40 must log the same
+    # rows as one straight run to t=40. The window shows only the loaded part.
+    full, part, rest = (tmp_path / n for n in ("full.csv", "part.csv", "rest.csv"))
+    snap = tmp_path / "w.alife"
+    common = ["--headless", "--log-every", "10", *SMALL]
+    runs = [
+        ["--steps", "40", "--seed", "4", "--log", str(full)],
+        ["--steps", "20", "--seed", "4", "--log", str(part), "--save", str(snap)],
+        ["--steps", "40", "--load", str(snap), "--log", str(rest)],
+    ]
+    for extra in runs:
+        r = alife(*common, *extra)
+        assert r.returncode == 0, r.stderr
+    straight = full.read_text().splitlines()
+    resumed = rest.read_text().splitlines()
+    assert part.read_text().splitlines() == straight[:4]  # header, t=0, 10, 20
+    assert resumed[:2] == [straight[0], straight[3]]  # header, t=20 logged on load
+    assert resumed[2:] == straight[4:]  # t=30, 40 identical to the straight run
+
+
+def test_save_every_writes_file(tmp_path):
+    snap = tmp_path / "w.alife"
+    r = alife("--headless", "--steps", "10", "--seed", "1", "--save", str(snap),
+              "--save-every", "5", *SMALL)  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    assert snap.exists()
+
+
+def test_load_shape_mismatch_fails(tmp_path):
+    snap = tmp_path / "w.alife"
+    assert (
+        alife("--headless", "--steps", "3", "--save", str(snap), *SMALL).returncode == 0
+    )
+    r = alife(
+        "--headless", "--steps", "5", "--load", str(snap), "--set", "N_HID=8", *SMALL
+    )
+    assert r.returncode != 0
+    assert "N_HID" in r.stderr

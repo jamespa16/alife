@@ -48,7 +48,7 @@ Walls or water cells that block movement and sensing, and poison zones. Mazes re
 
 ## Phase 4: Tools for watching and experimenting
 
-### Save and load worlds (S–M)
+### Save and load worlds (S–M) ✅
 Save every tensor to disk, reload it, and fork a run from any point. That makes "what if I add predators to *this* world" experiments possible.
 - Touches: `World.save()` / `World.load()`, CLI flags `--save` / `--load`.
 
